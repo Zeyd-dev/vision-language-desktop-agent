@@ -1,0 +1,17 @@
+# Secrets -- never commit real API keys
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Run artifacts (screenshots + logs from real runs -- can be large and are machine-specific)
+runs/
+
+# Editor/OS cruft
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
