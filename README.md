@@ -278,6 +278,11 @@ explicit number to stay within instead of estimating from the image alone.
   and "Run finished" lines. Fixed by stripping the message before matching;
   verified with a scripted test simulating the exact log sequence a real
   "done" run produces.
+- The web UI has no authentication. Binding to `0.0.0.0` so your phone can
+  reach it means *any* device on the same wifi network can reach it too --
+  there's currently no login or PIN gating who can run tasks, watch the
+  live screenshot, or stop a run. Fine on a trusted home network; a real
+  gap on shared/public wifi. Planned next, not yet built.
 - One run at a time across all three interfaces (CLI, GUI, web) — there's a
   single global loop, not per-tab/per-device concurrency.
 - No formal accuracy benchmark yet — testing so far has been informal, via
