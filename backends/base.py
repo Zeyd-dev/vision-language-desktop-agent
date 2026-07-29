@@ -21,6 +21,7 @@ VALID_ACTIONS = {
     "wait",
     "open_url",
     "launch_app",
+    "focus_window",
     "done",
     "fail",
 }
@@ -28,15 +29,7 @@ VALID_ACTIONS = {
 
 @dataclass
 class AgentAction:
-    """
-    A single decision returned by the VLM for one loop iteration.
-
-    Mirrors the JSON action schema from the project spec, plus one
-    forward-looking field (`expected_outcome`) that isn't required for the
-    MVP but exists so a future Plan -> Act -> Reflect cycle can compare what
-    the model expected to happen against the next screenshot, without
-    changing the schema again.
-    """
+    """A single decision returned by the VLM for one loop iteration."""
 
     reasoning: str
     action: str
@@ -46,8 +39,8 @@ class AgentAction:
     scroll_amount: Optional[int] = None
     done_summary: Optional[str] = None
     fail_reason: Optional[str] = None
-    # Forward-looking / optional: what the model expects to see after this
-    # action executes. Used by the (future) reflect step; safe to ignore now.
+    # Optional: what the model expects to see after this action executes.
+    # Used by the (future) reflect step; safe to ignore now.
     expected_outcome: Optional[str] = None
     # Populated by the loop controller after parsing, not by the model.
     raw_response: Optional[dict] = field(default=None, repr=False)
@@ -67,6 +60,8 @@ class AgentAction:
             raise ValueError("Action 'open_url' requires 'text' (a URL or search query)")
         if self.action == "launch_app" and not self.text:
             raise ValueError("Action 'launch_app' requires 'text' (an application name)")
+        if self.action == "focus_window" and not self.text:
+            raise ValueError("Action 'focus_window' requires 'text' (a substring of the window's title)")
         if self.action == "done" and not self.done_summary:
             raise ValueError("Action 'done' requires 'done_summary'")
         if self.action == "fail" and not self.fail_reason:
@@ -84,13 +79,5 @@ class VLMBackend(ABC):
         history: list[dict],
         screen_size: tuple[int, int],
     ) -> AgentAction:
-        """
-        Given the task, the current screenshot (encoded image bytes, e.g.
-        JPEG/PNG), a condensed history of prior steps, and the real screen
-        resolution, return the single next AgentAction to execute.
-
-        Implementations are responsible for calling the underlying model,
-        enforcing the structured-output schema, and raising a clear
-        exception if the response can't be parsed into a valid AgentAction.
-        """
+        """Given the task, current screenshot, and condensed history, return the single next AgentAction."""
         raise NotImplementedError

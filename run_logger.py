@@ -75,11 +75,7 @@ class RunLogger:
             f.write(f"  outcome: {outcome}\n\n")
 
     def log_note(self, text: str) -> None:
-        """
-        Appends a free-form note to the human-readable log (diagnostics,
-        warnings, stuck-loop nudges) -- not tied to a specific step, just
-        useful context for reviewing the run afterward.
-        """
+        """Append a free-form note to the human-readable log, not tied to a specific step."""
         with open(self._txt_path, "a", encoding="utf-8") as f:
             f.write(f"NOTE: {text}\n\n")
 

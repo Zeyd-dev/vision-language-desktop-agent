@@ -3,10 +3,9 @@ Safety guardrails: high-risk action detection, terminal confirmation
 prompts, and a global kill switch.
 
 Design note: both the kill switch and the confirmation prompts need to read
-from stdin. Rather than having two different pieces of code call input()
-independently (which would race for the same stream), a single background
-thread (StdinListener) is the only thing that ever reads stdin. It pushes
-every typed line onto a queue; everything else consumes from that queue.
+from stdin. A single background thread (StdinListener) is the only thing
+that ever reads stdin, pushing every typed line onto a queue that everything
+else consumes from -- avoids two independent input() calls racing.
 """
 from __future__ import annotations
 
@@ -16,7 +15,7 @@ import sys
 import threading
 from typing import Optional
 
-from config import HIGH_RISK_KEYWORDS, KILL_SWITCH_PHRASE
+from config import HIGH_RISK_KEY_COMBOS, HIGH_RISK_KEYWORDS, KILL_SWITCH_PHRASE
 
 
 class KillSwitch(Exception):
@@ -39,11 +38,7 @@ class StdinListener:
             self._queue.put(line.strip())
 
     def check_kill_switch(self) -> bool:
-        """
-        Non-blocking. Drains any lines typed since the last check. Returns
-        True if the kill switch phrase appeared among them. Call this once
-        per loop iteration, before executing the next action.
-        """
+        """Non-blocking. True if the kill switch phrase was typed since the last check."""
         triggered = False
         while True:
             try:
@@ -60,15 +55,9 @@ class StdinListener:
 
 
 def contains_high_risk_keyword(*texts: str) -> Optional[str]:
-    """
-    Return the first matching keyword found across the given texts, or None.
+    """Return the first matching keyword found across the given texts, or None.
 
-    Uses word-boundary matching (\\b...\\b), not a plain substring check --
-    a plain "format" in combined check would also match "information",
-    "formatted", "reformat", etc. Word boundaries require an actual
-    word/non-word transition on both sides, so "format" only matches when
-    it appears as its own word.
-    """
+    Uses word-boundary matching so "format" doesn't also match "information"."""
     combined = " ".join(t for t in texts if t).lower()
     for kw in HIGH_RISK_KEYWORDS:
         if re.search(rf"\b{re.escape(kw)}\b", combined):
@@ -76,12 +65,22 @@ def contains_high_risk_keyword(*texts: str) -> Optional[str]:
     return None
 
 
+def is_high_risk_key_combo(key: Optional[str]) -> Optional[str]:
+    """Return the matched combo if a "key" action's key is inherently risky, or None.
+
+    This checks what the action IS (e.g. alt+f4 closes the focused window),
+    independent of how the model's "reasoning" happens to describe it --
+    contains_high_risk_keyword() above only catches risk if the model's own
+    wording matches a listed word, and a real run once pressed alt+f4 with
+    zero confirmation because its reasoning never used any listed word."""
+    if not key:
+        return None
+    normalized = "+".join(p.strip() for p in key.lower().split("+") if p.strip())
+    return normalized if normalized in HIGH_RISK_KEY_COMBOS else None
+
+
 def confirm_risky_action(listener: StdinListener, action, matched_keyword: str) -> bool:
-    """
-    Block and print a confirmation prompt for a high-risk action. Returns
-    True if the user approved it. Raises KillSwitch if the user types the
-    kill switch phrase instead of answering.
-    """
+    """Block on a confirmation prompt. Returns True if approved, raises KillSwitch on the kill phrase."""
     print("\n" + "=" * 60)
     print(f"HIGH-RISK ACTION DETECTED (matched keyword: '{matched_keyword}')")
     print(f"  Action:    {action.action}")

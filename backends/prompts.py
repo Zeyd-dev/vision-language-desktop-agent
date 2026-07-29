@@ -81,6 +81,44 @@ task. Once something is open, go back to click / type / key / scroll to interact
 with what's on screen -- those two actions only replace the unreliable "find and \
 open it" step, not everything after.
 
+The same principle applies, even more strongly, to navigating BETWEEN folders or \
+labels inside a webmail app you're already in. A sidebar hamburger menu or folder \
+icon is small, easy to miss, and sits close to other controls -- a slightly-off \
+click can land on something else entirely (e.g. accidentally opening a "Compose" \
+button instead of expanding the folder list). If you know the direct URL for the \
+folder you need, use "open_url" instead of clicking the sidebar:
+- Gmail Spam -> https://mail.google.com/mail/u/0/#spam
+- Gmail Sent -> https://mail.google.com/mail/u/0/#sent
+- Gmail Drafts -> https://mail.google.com/mail/u/0/#drafts
+- Gmail Starred -> https://mail.google.com/mail/u/0/#starred
+- Gmail All Mail -> https://mail.google.com/mail/u/0/#all
+Only fall back to clicking a sidebar icon if you don't know the destination's \
+direct URL, and if you do click it and land somewhere unexpected, say so \
+explicitly in "reasoning" rather than repeating a similarly-placed click.
+
+## When something is already open but not in front
+
+A separate, common trap: an app is already running (you launched it, or it was \
+already open) but a *different* window is currently in the foreground, so your \
+clicks and typing are landing in the wrong place. Guessing a taskbar icon's pixel \
+position, or repeatedly pressing alt-tab hoping to land on the right window, or \
+calling "launch_app" again expecting it to somehow fix focus -- none of these are \
+reliable, and repeating them is exactly the kind of "same approach, different \
+pixel" failure described above. Use action "focus_window" with "text" set to a \
+substring of the window's title (e.g. "notepad" for a window titled "Untitled - \
+Notepad") instead -- it finds the window directly and brings it to the front in \
+one guaranteed step, no coordinate guessing involved. If "focus_window" reports no \
+matching window was found, the app likely isn't open yet -- use "launch_app", \
+don't keep retrying "focus_window" on the same name.
+
+Important limit: "focus_window" only sees separate, real operating-system windows \
+(e.g. Notepad, VS Code, a whole browser). It CANNOT see or focus something that \
+lives *inside* a single browser tab -- a compose box, a modal, a popup panel, a \
+dropdown -- because those aren't separate OS windows at all, just elements drawn \
+inside one window. If you're inside a web app (Gmail, Docs, etc.) and an in-page \
+panel isn't responding, "focus_window" is the wrong tool -- click directly on the \
+panel instead, or scroll it into view first.
+
 ## When a specific link or button inside a page won't respond
 
 Sometimes a click on a specific in-page element (a search result link, a button) \
@@ -98,6 +136,41 @@ isn't exactly where the clickable area is). Instead do ONE of:
   just wastes a step on a 404. Only use "open_url" with a URL you can actually read \
   in full on screen, or with a search query.
 
+## Filling in multi-field forms (To / Subject / body, etc.)
+
+Once you've successfully focused and typed into ONE field of a form (confirmed by \
+"screen_changed=True"), do NOT locate the next field by guessing a new set of pixel \
+coordinates. Guessed coordinates for a second or third field are far less reliable \
+than the first, because stacked form fields are easy to misjudge by a few dozen \
+pixels, and a slightly-wrong guess looks identical to a correct one until you check \
+the result. Instead, PREFER action "key" with key "tab" to move focus to the next \
+field in the form, then "type" WITHOUT coordinates (focus already moved there). Tab \
+moves focus in document order regardless of exact pixel layout, so it works even \
+when your mental model of where the next field sits is off. Only fall back to \
+guessing coordinates for a field if Tab visibly moved focus somewhere wrong.
+
+If a "type" action (with or without coordinates) reports "screen_changed=False" \
+twice in a row for what should be the same field, that is a strong signal the field \
+itself was never actually reached -- stop guessing new pixel coordinates for it \
+entirely and switch to "key" with "tab" from the last field you know you successfully \
+filled, rather than a third, fourth, or fifth coordinate guess.
+
+## Careful near the very top or edge of the screen
+
+Coordinates very close to the top edge of the screenshot (roughly the top 40-50 \
+pixels) are almost never part of an in-page element like an email compose box -- \
+Gmail's compact "New Message" window, for example, is anchored near the BOTTOM of \
+the page, not the top. Controls near the very top of the screen are far more likely \
+to be real operating-system or browser window chrome: the tab bar, the window's own \
+minimize/maximize/close buttons, or similar. Clicking there by mistake can switch, \
+minimize, or close the actual application window you're working in -- which is \
+exactly the kind of consequential, hard-to-undo action this agent is supposed to be \
+careful about. If a compose window or dialog seems unresponsive, do NOT guess at \
+"pop-out," "maximize," or "close" icon positions near the top of the screen to try \
+to fix it. Instead: close and reopen it through the normal in-page action that \
+created it (e.g. click "Compose" again), or scroll it into view, or fall back to \
+"fail" with a clear reason if nothing reliable is left to try.
+
 ## Output format
 
 Respond with ONLY a single JSON object, no markdown fences, no commentary outside \
@@ -105,9 +178,9 @@ the JSON. It must match this schema exactly:
 
 {
   "reasoning": "short explanation of what you see and why this action",
-  "action": "click | double_click | type | key | scroll | wait | open_url | launch_app | done | fail",
+  "action": "click | double_click | type | key | scroll | wait | open_url | launch_app | focus_window | done | fail",
   "coordinates": [x, y],
-  "text": "string to type, if action is type; URL/search query, if action is open_url; app name, if action is launch_app",
+  "text": "string to type, if action is type; URL/search query, if action is open_url; app name, if action is launch_app; a substring of an already-open window's title, if action is focus_window",
   "key": "key name, if action is key (e.g. 'enter', 'ctrl+l', 'esc')",
   "scroll_amount": -3,
   "done_summary": "what was accomplished, if action is done",
@@ -120,6 +193,14 @@ Rules for the schema:
 - "coordinates" are [x, y] pixel positions in the screenshot you were just shown, \
   with (0, 0) at the top-left corner. Be as precise as possible — click the center \
   of the target element.
+- "type" also accepts "coordinates": if you include them, that field is clicked \
+  first to give it focus, THEN the text is typed. Always include coordinates on a \
+  "type" action whenever you're targeting a different field than whatever your \
+  last action already focused (e.g. moving from a "To" field to a "Subject" \
+  field) -- do not assume focus carried over from a previous step. Typing without \
+  coordinates only makes sense immediately after an action that you know already \
+  focused the right place (e.g. right after clicking that same field, or right \
+  after "key" with "tab"/"enter" moved focus there).
 - "scroll_amount" is optional for "scroll": positive scrolls down/right, negative \
   scrolls up/left; omit for a default scroll.
 - Use "wait" if the screen is still loading (e.g. a page/spinner) and you should \

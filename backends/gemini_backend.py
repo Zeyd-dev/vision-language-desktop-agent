@@ -4,13 +4,8 @@ Gemini implementation of VLMBackend.
 Free-tier alternative to ClaudeBackend. Uses Gemini's structured-output
 feature (response_schema) to force the model's answer into the same
 AgentAction shape Claude gives us via tool-use -- different mechanism on
-Google's side, same guarantee we rely on: the API enforces the shape, we
-never parse free text and hope.
-
-Deliberately uses a general-purpose Gemini model (not the browser-only
-"Computer Use" preview model) so it reuses our own action schema and
-system prompt unmodified, and stays usable on any desktop app instead of
-being scoped to browser control only.
+Google's side, same guarantee: the API enforces the shape, we never parse
+free text and hope.
 
 Supports a POOL of API keys (config.GEMINI_API_KEYS). Each free-tier
 Google Cloud project has its own independent daily quota, so when the
@@ -32,26 +27,19 @@ from .prompts import SYSTEM_PROMPT
 from config import GEMINI_API_KEYS, GEMINI_MODEL
 
 
-# Substrings that show up in Gemini's error messages for *temporary*
-# problems (server overload, rate limiting) as opposed to real bugs (bad
-# API key, malformed request). Only these get retried at all.
+# Substrings in Gemini's error messages for transient problems (server
+# overload, rate limiting) vs. real bugs (bad key, malformed request).
+# Only transient errors get retried.
 _TRANSIENT_ERROR_HINTS = ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED", "overloaded")
-# Google's own quotaId naming (e.g. "GenerateRequestsPerDayPerProjectPerModel-
-# FreeTier") tells us WHICH kind of limit was hit. A per-day exhaustion means
-# waiting a few seconds is pointless -- only rotating to a different key
-# helps. Anything else transient (per-minute limits, server overload) is
-# worth a short backoff-and-retry on the SAME key instead.
+# Google's quotaId naming tells us which kind of limit was hit. A per-day
+# hit means only rotating keys helps; anything else is worth a backoff-retry.
 _DAILY_QUOTA_HINT = "PerDay"
 _MAX_RETRIES_PER_KEY = 3
 _RETRY_BACKOFF_SECONDS = 2  # doubles each retry: 2s, 4s, 8s
 
 
 class _AgentActionSchema(BaseModel):
-    """
-    Mirrors AgentAction's fields, in the shape google-genai's response_schema
-    expects (a Pydantic model). This is the Gemini equivalent of Claude's
-    ACTION_TOOL dict in claude_backend.py -- same job, different API.
-    """
+    """Mirrors AgentAction as a Pydantic model -- the Gemini equivalent of Claude's ACTION_TOOL dict."""
 
     reasoning: str
     action: str
@@ -65,10 +53,8 @@ class _AgentActionSchema(BaseModel):
 
 
 class GeminiBackend(VLMBackend):
-    # Free tier for gemini-2.5-flash allows 5 requests/minute. Spacing calls
-    # at least this far apart means we approach the limit deliberately
-    # instead of hitting it after the fact and relying on retries to save
-    # us -- avoiding the wall beats recovering from it.
+    # Free tier for gemini-2.5-flash allows 5 requests/minute; pace calls
+    # to approach that limit deliberately instead of tripping it.
     _MIN_SECONDS_BETWEEN_CALLS = 13
 
     def __init__(
@@ -103,9 +89,15 @@ class GeminiBackend(VLMBackend):
         screen_size: tuple[int, int],
     ) -> AgentAction:
         history_text = self._render_history(history)
+        width, height = screen_size
 
         prompt_text = (
             f"TASK: {task}\n\n"
+            f"SCREENSHOT SIZE: {width}x{height} pixels. Your \"coordinates\" MUST be "
+            f"within 0-{width} horizontally and 0-{height} vertically -- any value "
+            f"outside that range will be rejected and the action skipped, wasting a "
+            f"step. Do not estimate coordinates from a guess about typical screen "
+            f"layouts; read them off this exact image.\n\n"
             f"HISTORY OF PRIOR STEPS (most recent last):\n{history_text}\n\n"
             "Here is the current screenshot. Decide the single next action."
         )
@@ -129,11 +121,7 @@ class GeminiBackend(VLMBackend):
         return action
 
     def _wait_for_rate_limit(self) -> None:
-        """
-        Blocks just long enough to keep at least _MIN_SECONDS_BETWEEN_CALLS
-        between requests, so the free tier's per-minute quota is approached
-        deliberately instead of tripped and then recovered from.
-        """
+        """Sleep just enough to keep calls at least _MIN_SECONDS_BETWEEN_CALLS apart."""
         if self._last_call_time is not None:
             elapsed = time.monotonic() - self._last_call_time
             remaining = self._MIN_SECONDS_BETWEEN_CALLS - elapsed
@@ -142,10 +130,7 @@ class GeminiBackend(VLMBackend):
         self._last_call_time = time.monotonic()
 
     def _rotate_key(self) -> bool:
-        """
-        Switch to the next API key in the pool. Returns False if there isn't
-        one (caller should give up at that point, not loop forever).
-        """
+        """Switch to the next API key in the pool. False if none remain."""
         if self._key_index + 1 >= len(self._api_keys):
             return False
         self._key_index += 1
@@ -154,16 +139,7 @@ class GeminiBackend(VLMBackend):
         return True
 
     def _generate_with_retry(self, prompt_text: str, screenshot_bytes: bytes):
-        """
-        Calls the Gemini API. Two different failure responses depending on
-        WHAT kind of transient error comes back:
-          - per-minute limit / server overload -> short backoff, retry the
-            SAME key (waiting actually helps here)
-          - per-day quota exhausted -> waiting is pointless, rotate to the
-            next configured key instead and retry immediately
-        A non-transient error (bad key, malformed request) is raised right
-        away in either case -- retrying or rotating won't fix a real bug.
-        """
+        """Retry transient errors on the same key; rotate keys on a daily-quota hit; fail fast otherwise."""
         last_error: Exception | None = None
         while True:
             for attempt in range(_MAX_RETRIES_PER_KEY + 1):
@@ -184,16 +160,14 @@ class GeminiBackend(VLMBackend):
                 except Exception as e:  # noqa: BLE001 - inspecting message text, not a specific SDK exception type
                     last_error = e
                     if not any(hint in str(e) for hint in _TRANSIENT_ERROR_HINTS):
-                        raise  # not transient at all -- fail fast, don't waste retries on a real bug
+                        raise  # not transient -- fail fast
                     if _DAILY_QUOTA_HINT in str(e):
                         break  # stop retrying THIS key; try rotating below instead
                     if attempt < _MAX_RETRIES_PER_KEY:
                         time.sleep(_RETRY_BACKOFF_SECONDS * (2**attempt))
             else:
-                # exhausted per-key retries without ever hitting a daily-quota break
-                raise last_error
+                raise last_error  # exhausted per-key retries, never hit a daily-quota break
 
-            # only reached via the daily-quota `break` above
             if not self._rotate_key():
                 raise RuntimeError(
                     f"All {len(self._api_keys)} configured Gemini API key(s) have hit "
@@ -204,12 +178,7 @@ class GeminiBackend(VLMBackend):
 
     @staticmethod
     def _parse_response(response) -> dict:
-        """
-        Prefer the SDK's already-parsed Pydantic object (response.parsed);
-        fall back to parsing response.text as JSON if that's not populated.
-        Keeps this working across minor SDK version differences instead of
-        depending on one exact attribute always being set.
-        """
+        """Prefer the SDK's parsed Pydantic object; fall back to parsing response.text as JSON."""
         parsed = getattr(response, "parsed", None)
         if parsed is not None:
             return parsed.model_dump()

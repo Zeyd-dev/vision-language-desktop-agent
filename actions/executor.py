@@ -33,12 +33,6 @@ pyautogui.PAUSE = 0.15
 
 
 def _enable_windows_dpi_awareness() -> None:
-    """
-    On Windows, display scaling above 100% makes pyautogui's coordinate
-    space diverge from raw screenshot pixels, so clicks land in the wrong
-    spot. Marking this process DPI-aware fixes that for most setups. Safe
-    no-op on other platforms or if the underlying Windows API is missing.
-    """
     if platform.system() != "Windows":
         return
     try:
@@ -70,14 +64,7 @@ class Screenshot:
         return int(round(x * self.scale)), int(round(y * self.scale))
 
     def is_within_bounds(self, x: float, y: float) -> bool:
-        """
-        True if (x, y) falls inside the downscaled image the model was
-        actually shown. Models occasionally invent coordinates outside the
-        image entirely (e.g. a y-value beyond the image's real height) --
-        scaling and clicking one of those anyway lands somewhere on the
-        real screen that has nothing to do with what the model intended.
-        Rejecting it up front is safer than clicking blind.
-        """
+        """True if (x, y) falls inside the downscaled image the model was actually shown."""
         w, h = self.resized_size
         return 0 <= x <= w and 0 <= y <= h
 
@@ -95,17 +82,7 @@ def get_pyautogui_size() -> Tuple[int, int]:
 
 
 def screens_differ(img_a: Image.Image, img_b: Image.Image, threshold: float = 0.015) -> bool:
-    """
-    Cheap perceptual diff between two full-resolution screenshots.
-
-    Downscales both to a small grayscale thumbnail and compares mean pixel
-    difference. This gives an OBJECTIVE, code-computed signal for "did
-    anything on screen actually change after the last action" -- as
-    opposed to relying on the model's own self-reported judgment call,
-    which real runs have shown can be wrong or can get stuck re-asserting
-    the same read of the screen turn after turn. The loop controller uses
-    this to detect stuck loops and force a strategy change.
-    """
+    """Cheap perceptual diff: downscale both to a grayscale thumbnail and compare mean pixel difference."""
     size = (96, 96)
     a = img_a.convert("L").resize(size)
     b = img_b.convert("L").resize(size)
@@ -114,6 +91,22 @@ def screens_differ(img_a: Image.Image, img_b: Image.Image, threshold: float = 0.
     diff_sum = sum(abs(x - y) for x, y in zip(a_bytes, b_bytes))
     mean_diff = diff_sum / (len(a_bytes) * 255)
     return mean_diff > threshold
+
+
+def crop_region(img: Image.Image, x: int, y: int, box: int = 180) -> Image.Image:
+    """Crop a `box`-pixel square centered on real screen coordinates (x, y), clamped to the image.
+
+    Used to supplement screens_differ() with a localized check: a small UI
+    change (a compose popup closing, one field updating) can be too small
+    to move a whole-screen diff, even though the action genuinely worked --
+    diffing just the area around where the action happened catches that."""
+    w, h = img.size
+    half = box // 2
+    left = max(0, min(x - half, w - box)) if w > box else 0
+    top = max(0, min(y - half, h - box)) if h > box else 0
+    right = min(w, left + box)
+    bottom = min(h, top + box)
+    return img.crop((left, top, right, bottom))
 
 
 def capture_screenshot() -> Screenshot:
@@ -172,24 +165,7 @@ class ActionExecutor:
         time.sleep(seconds)
 
     def open_url(self, url_or_query: str) -> str:
-        """
-        Deterministically opens a URL (or a search query) in the OS default
-        browser via the stdlib `webbrowser` module, WITHOUT touching the
-        Start menu, taskbar icons, or any key-press sequence at all.
-
-        This exists because the GUI-only path -- press Windows key, hope
-        the Start menu actually opened (it can silently toggle closed on a
-        second press), type an app name into a search box that may or may
-        not be focused, press Enter and hope -- is inherently a multi-step
-        race across several slow model round-trips. Real runs have shown
-        this failing for 15-20 iterations straight even when nothing looks
-        obviously wrong. Opening a browser to a URL is a single, atomic,
-        OS-level call with no such race, so it should be preferred whenever
-        the task is "get to this website" rather than reproduced by hand.
-
-        If `url_or_query` isn't already a URL, it's treated as a search
-        term and wrapped into a Google search URL.
-        """
+        """Open a URL (or search query) in the OS default browser directly, no GUI navigation involved."""
         target = url_or_query.strip()
         if not re.match(r"^https?://", target, re.IGNORECASE):
             if "." in target and " " not in target:
@@ -200,14 +176,62 @@ class ActionExecutor:
         return target
 
     def launch_app(self, name: str) -> str:
-        """
-        Deterministically launches a named application (e.g. "chrome",
-        "notepad", "calc", "explorer") the same way typing it into the
-        Windows Run dialog and pressing Enter would -- but as one direct
-        OS call instead of several GUI steps (open Start menu, confirm it's
-        focused, type, press Enter) that can silently fail or race against
-        the next screenshot.
-        """
+        """Launch a named app directly (same mechanism as the Windows Run dialog), no GUI steps involved."""
         name = name.strip()
         subprocess.Popen(["cmd", "/c", "start", "", name], shell=False)
         return name
+
+    def focus_window(self, name: str) -> str:
+        """Bring an already-open window to the foreground by matching a substring of its title.
+
+        This exists because clicking a taskbar icon or alt-tabbing blind is one of the
+        least reliable things the model can do -- it has to guess pixel coordinates for
+        an icon it can't precisely locate, or cycle windows with no way to confirm which
+        one landed in front. This gives a deterministic alternative: find the window,
+        raise it, done in one step -- no guessing involved.
+        """
+        if platform.system() != "Windows":
+            return f"focus_window not supported on this OS (skipped): {name}"
+
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        needle = name.strip().lower()
+        matches: list[tuple[int, str]] = []
+
+        def _enum_callback(hwnd, _lparam):
+            if user32.IsWindowVisible(hwnd):
+                length = user32.GetWindowTextLengthW(hwnd)
+                if length > 0:
+                    buf = ctypes.create_unicode_buffer(length + 1)
+                    user32.GetWindowTextW(hwnd, buf, length + 1)
+                    if needle in buf.value.lower():
+                        matches.append((hwnd, buf.value))
+            return True
+
+        enum_proc = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)(_enum_callback)
+        user32.EnumWindows(enum_proc, 0)
+
+        if not matches:
+            return f"no open window found matching '{name}' -- it may not be open yet"
+
+        hwnd, title = matches[0]
+        SW_RESTORE = 9
+        user32.ShowWindow(hwnd, SW_RESTORE)  # un-minimize if needed
+
+        # SetForegroundWindow is blocked by Windows for background processes unless
+        # our thread's input state is briefly attached to the current foreground
+        # window's thread -- the standard workaround for this restriction.
+        fg_hwnd = user32.GetForegroundWindow()
+        current_thread = kernel32.GetCurrentThreadId()
+        fg_thread = user32.GetWindowThreadProcessId(fg_hwnd, None)
+        target_thread = user32.GetWindowThreadProcessId(hwnd, None)
+        user32.AttachThreadInput(current_thread, fg_thread, True)
+        user32.AttachThreadInput(current_thread, target_thread, True)
+        user32.SetForegroundWindow(hwnd)
+        user32.AttachThreadInput(current_thread, fg_thread, False)
+        user32.AttachThreadInput(current_thread, target_thread, False)
+
+        return f"focused window: {title!r}"

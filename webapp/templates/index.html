@@ -1,0 +1,713 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vision-Language Desktop Agent</title>
+<link rel="manifest" href="/static/manifest.json">
+<link rel="apple-touch-icon" href="/static/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="VLA Agent">
+<meta name="theme-color" content="#141B49">
+<style>
+  :root {
+    --navy: #1E2761;
+    --navy-deep: #141B49;
+    --ice: #CADCFC;
+    --ice-tint: #EFF4FE;
+    --white: #FFFFFF;
+    --amber: #F2A93B;
+    --ink: #273043;
+    --muted: #6B7590;
+    --green: #2E8B57;
+    --red: #C0392B;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", Calibri, Arial, sans-serif;
+    background: var(--ice-tint);
+    color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+  }
+  .icon { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
+
+  /* ---------- Hero header ---------- */
+  header {
+    position: relative;
+    overflow: hidden;
+    background: linear-gradient(135deg, var(--navy-deep) 0%, var(--navy) 100%);
+    color: var(--white);
+    padding: 28px 20px 34px;
+  }
+  header::before {
+    content: "";
+    position: absolute;
+    width: 260px; height: 260px;
+    background: radial-gradient(circle, rgba(242,169,59,0.28) 0%, rgba(242,169,59,0) 70%);
+    top: -90px; right: -60px;
+    border-radius: 50%;
+  }
+  header::after {
+    content: "";
+    position: absolute;
+    width: 180px; height: 180px;
+    background: radial-gradient(circle, rgba(202,220,252,0.15) 0%, rgba(202,220,252,0) 70%);
+    bottom: -80px; left: -40px;
+    border-radius: 50%;
+  }
+  .hero-inner { position: relative; max-width: 720px; margin: 0 auto; display: flex; align-items: center; gap: 14px; }
+  .hero-badge {
+    width: 46px; height: 46px;
+    background: rgba(255,255,255,0.12);
+    border: 1px solid rgba(255,255,255,0.22);
+    border-radius: 13px;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  .hero-badge .icon { stroke: var(--amber); width: 24px; height: 24px; }
+  header h1 { margin: 0; font-family: Cambria, Georgia, serif; font-size: 21px; font-weight: 700; letter-spacing: 0.2px; }
+  header p { margin: 3px 0 0; font-size: 12.5px; color: var(--ice); }
+
+  main { max-width: 720px; margin: -18px auto 0; padding: 0 16px 24px; position: relative; }
+
+  .card {
+    background: var(--white);
+    border-radius: 16px;
+    padding: 18px;
+    margin-bottom: 16px;
+    box-shadow: 0 8px 24px rgba(20, 27, 73, 0.09), 0 1px 3px rgba(20,27,73,0.06);
+    border: 1px solid rgba(20,27,73,0.04);
+  }
+  .card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .card-icon {
+    width: 34px; height: 34px; border-radius: 10px;
+    background: var(--ice-tint);
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  .card-icon .icon { stroke: var(--navy); width: 18px; height: 18px; }
+  .card-head h2 { margin: 0; font-size: 14.5px; color: var(--navy); font-weight: 700; }
+  .card-head .sub { margin: 0; font-size: 11.5px; color: var(--muted); }
+
+  label { display: block; font-size: 12.5px; font-weight: 600; color: var(--navy); margin-bottom: 4px; }
+  textarea, select, input[type=number] {
+    width: 100%;
+    font-size: 15px;
+    padding: 10px 11px;
+    border: 1.5px solid #E3E8F5;
+    border-radius: 10px;
+    background: var(--ice-tint);
+    color: var(--ink);
+    font-family: inherit;
+    transition: border-color 0.15s ease;
+  }
+  textarea:focus, select:focus, input:focus { outline: none; border-color: var(--navy); }
+  textarea { resize: vertical; min-height: 56px; }
+
+  .row { display: flex; gap: 10px; margin-top: 10px; }
+  .row > div { flex: 1; }
+
+  .chip-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+  .chip {
+    background: var(--ice-tint);
+    color: var(--navy);
+    border: 1px solid #E3E8F5;
+    border-radius: 999px;
+    padding: 7px 13px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s ease, transform 0.1s ease;
+  }
+  .chip:active { background: var(--ice); transform: scale(0.97); }
+
+  .btn-row { display: flex; gap: 10px; margin-top: 16px; }
+  button {
+    flex: 1;
+    padding: 13px;
+    font-size: 15px;
+    font-weight: 700;
+    border: none;
+    border-radius: 11px;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    transition: transform 0.08s ease, box-shadow 0.15s ease, background 0.15s ease;
+  }
+  button:active:not(:disabled) { transform: scale(0.97); }
+  #run-btn { background: var(--navy); color: var(--white); box-shadow: 0 4px 14px rgba(30,39,97,0.3); }
+  #run-btn:disabled { background: #C7CCDE; box-shadow: none; cursor: not-allowed; }
+  #stop-btn { background: var(--amber); color: var(--navy-deep); }
+  #stop-btn:disabled { background: #F5E4C4; color: #B7AD95; cursor: not-allowed; }
+  .hint { font-size: 11.5px; color: var(--muted); margin-top: 10px; text-align: center; }
+
+  /* ---------- Result banner ---------- */
+  #result-card { display: none; padding: 18px; }
+  #result-card.show { display: block; animation: resultPop 0.35s ease; }
+  @keyframes resultPop {
+    from { opacity: 0; transform: translateY(-8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .result-row { display: flex; align-items: flex-start; gap: 14px; }
+  .result-icon {
+    width: 40px; height: 40px; border-radius: 12px;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  .result-icon .icon { width: 21px; height: 21px; stroke: currentColor; }
+  .result-body { flex: 1; min-width: 0; }
+  .result-label { font-size: 11px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; opacity: 0.8; margin-bottom: 3px; }
+  .result-value { font-size: 16.5px; font-weight: 700; line-height: 1.42; word-break: break-word; }
+  .result-actions { display: flex; gap: 6px; flex-shrink: 0; }
+  .result-actions button {
+    flex: none; width: 30px; height: 30px; padding: 0;
+    border: none; border-radius: 8px; cursor: pointer;
+    background: rgba(255,255,255,0.22);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .result-actions button svg { width: 15px; height: 15px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  #result-card.result-done { background: linear-gradient(135deg, #2E8B57 0%, #235f3f 100%); color: #fff; }
+  #result-card.result-fail, #result-card.result-killed { background: linear-gradient(135deg, #C0392B 0%, #922b21 100%); color: #fff; }
+  #result-card.result-iteration_limit, #result-card.result-time_limit { background: linear-gradient(135deg, #F2A93B 0%, #D98C1F 100%); color: var(--navy-deep); }
+  #result-card.result-done .result-icon, #result-card.result-fail .result-icon, #result-card.result-killed .result-icon { background: rgba(255,255,255,0.22); color: #fff; }
+  #result-card.result-iteration_limit .result-icon, #result-card.result-time_limit .result-icon { background: rgba(20,27,73,0.14); color: var(--navy-deep); }
+
+  /* ---------- Status card ---------- */
+  .status-row { display: flex; align-items: center; gap: 12px; }
+  .status-dot {
+    width: 14px; height: 14px; border-radius: 50%;
+    background: var(--muted);
+    flex-shrink: 0;
+    box-shadow: 0 0 0 0 rgba(107,117,144,0.4);
+  }
+  .status-dot.idle { background: #B9C0D4; }
+  .status-dot.running { background: var(--green); animation: pulse-green 1.6s infinite; }
+  .status-dot.waiting { background: var(--amber); animation: pulse-amber 1.2s infinite; }
+  @keyframes pulse-green {
+    0% { box-shadow: 0 0 0 0 rgba(46,139,87,0.45); }
+    70% { box-shadow: 0 0 0 10px rgba(46,139,87,0); }
+    100% { box-shadow: 0 0 0 0 rgba(46,139,87,0); }
+  }
+  @keyframes pulse-amber {
+    0% { box-shadow: 0 0 0 0 rgba(242,169,59,0.5); }
+    70% { box-shadow: 0 0 0 10px rgba(242,169,59,0); }
+    100% { box-shadow: 0 0 0 0 rgba(242,169,59,0); }
+  }
+  #friendly-status { font-size: 16.5px; font-weight: 700; color: var(--navy); line-height: 1.3; }
+  #friendly-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+  /* ---------- Screenshot ---------- */
+  #screenshot-wrap { text-align: center; position: relative; }
+  #screenshot {
+    max-width: 100%;
+    border-radius: 10px;
+    border: 1px solid #E3E8F5;
+    display: none;
+  }
+  #screenshot-placeholder {
+    color: var(--muted);
+    font-size: 13px;
+    padding: 30px 10px;
+    background: var(--ice-tint);
+    border-radius: 10px;
+    border: 1.5px dashed #D7DEEE;
+  }
+  .live-badge {
+    position: absolute; top: 8px; right: 8px;
+    background: rgba(192,57,43,0.9);
+    color: white;
+    font-size: 10px; font-weight: 700;
+    padding: 3px 8px;
+    border-radius: 999px;
+    display: none;
+    align-items: center;
+    gap: 4px;
+  }
+  .live-badge.show { display: inline-flex; }
+  .live-dot { width: 6px; height: 6px; background: white; border-radius: 50%; animation: blink 1s infinite; }
+  @keyframes blink { 50% { opacity: 0.3; } }
+
+  /* ---------- Connect your phone ---------- */
+  #connect-card { display: none; }
+  #connect-card.show { display: block; }
+  .connect-body { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+  #qr-img { width: 132px; height: 132px; border-radius: 10px; border: 1px solid #E3E8F5; background: white; }
+  .connect-text { flex: 1; min-width: 180px; }
+  .connect-text p { margin: 0 0 8px; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
+  .url-box {
+    display: flex; align-items: center; gap: 6px;
+    background: var(--ice-tint);
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-family: "Courier New", monospace;
+    font-size: 12.5px;
+    color: var(--navy);
+  }
+  .url-box button {
+    flex: none;
+    padding: 5px 10px;
+    font-size: 11px;
+    background: var(--navy);
+    color: white;
+    border-radius: 6px;
+  }
+
+  /* ---------- Technical log ---------- */
+  details > summary {
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--navy);
+    font-weight: 700;
+    padding: 2px 0;
+    list-style: none;
+  }
+  details > summary::-webkit-details-marker { display: none; }
+  details > summary::before { content: "▸ "; }
+  details[open] > summary::before { content: "▾ "; }
+  .terminal { margin-top: 10px; border-radius: 10px; overflow: hidden; }
+  .terminal-bar { background: #0F1538; padding: 8px 10px; display: flex; gap: 6px; }
+  .terminal-dot { width: 9px; height: 9px; border-radius: 50%; }
+  .terminal-bar .terminal-dot:nth-child(1) { background: #E0605A; }
+  .terminal-bar .terminal-dot:nth-child(2) { background: #E8B84B; }
+  .terminal-bar .terminal-dot:nth-child(3) { background: #4FAE64; }
+  #log {
+    background: var(--navy-deep);
+    color: var(--ice);
+    font-family: "Courier New", monospace;
+    font-size: 12px;
+    padding: 12px;
+    height: 260px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  /* ---------- History ---------- */
+  #history-list { list-style: none; margin: 0; padding: 0; }
+  #history-list li {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 0;
+    border-bottom: 1px solid #EEF1F8;
+    font-size: 13px;
+    gap: 10px;
+  }
+  #history-list li:last-child { border-bottom: none; }
+  .history-main { flex: 1; overflow: hidden; }
+  .history-task { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: var(--ink); }
+  .history-time { font-size: 11px; color: var(--muted); margin-top: 1px; }
+  .badge {
+    font-size: 11px;
+    font-weight: 700;
+    padding: 4px 10px;
+    border-radius: 999px;
+    color: white;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .badge-done { background: var(--green); }
+  .badge-fail, .badge-killed { background: var(--red); }
+  .badge-iteration_limit, .badge-time_limit { background: var(--amber); color: var(--navy-deep); }
+
+  /* ---------- Confirm modal ---------- */
+  #confirm-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(20, 27, 73, 0.55);
+    backdrop-filter: blur(3px);
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    z-index: 10;
+  }
+  #confirm-box { background: var(--white); border-radius: 16px; padding: 22px; max-width: 460px; width: 100%; box-shadow: 0 20px 50px rgba(0,0,0,0.3); }
+  .confirm-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .confirm-icon {
+    width: 38px; height: 38px; border-radius: 10px;
+    background: #FDF0DD;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  .confirm-icon .icon { stroke: var(--amber); }
+  #confirm-box h3 { margin: 0; color: var(--navy); font-size: 16px; }
+  #confirm-box p { font-size: 13px; line-height: 1.6; white-space: pre-wrap; background: var(--ice-tint); padding: 12px; border-radius: 10px; }
+  #confirm-box .btn-row button:first-child { background: #F1DFDC; color: var(--red); }
+  #confirm-box .btn-row button:last-child { background: var(--navy); color: white; }
+</style>
+</head>
+<body>
+<header>
+  <div class="hero-inner">
+    <div class="hero-badge">
+      <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8M12 18v3"/><circle cx="9" cy="10" r="1.2" fill="currentColor" stroke="none"/><circle cx="15" cy="10" r="1.2" fill="currentColor" stroke="none"/></svg>
+    </div>
+    <div>
+      <h1>Vision-Language Desktop Agent</h1>
+      <p>Give it a task, watch it work, from your PC or your phone.</p>
+    </div>
+  </div>
+</header>
+<main>
+
+  <div class="card" id="result-card">
+    <div class="result-row">
+      <div class="result-icon" id="result-icon"></div>
+      <div class="result-body">
+        <div class="result-label" id="result-label">Result</div>
+        <div class="result-value" id="result-value"></div>
+      </div>
+      <div class="result-actions">
+        <button onclick="copyResult()" title="Copy">
+          <svg viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>
+        </button>
+        <button onclick="dismissResult()" title="Dismiss">
+          <svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <div class="card-icon"><svg class="icon" viewBox="0 0 24 24"><path d="M5 3l14 9-14 9V3z"/></svg></div>
+      <div><h2>New task</h2><p class="sub">Tell it what to do in plain English</p></div>
+    </div>
+    <label for="task">Task</label>
+    <textarea id="task" placeholder="Open a browser and go to YouTube">Open a browser and go to YouTube</textarea>
+    <div class="chip-row" id="example-chips"></div>
+    <div class="row">
+      <div>
+        <label for="backend">Backend</label>
+        <select id="backend">
+          <option value="{{ default_backend }}" selected>{{ default_backend }}</option>
+          <option value="claude">claude</option>
+          <option value="gemini">gemini</option>
+        </select>
+      </div>
+      <div>
+        <label for="max-iter">Max steps</label>
+        <input type="number" id="max-iter" value="{{ default_max_iter }}" min="1" max="200">
+      </div>
+      <div>
+        <label for="max-min">Max minutes</label>
+        <input type="number" id="max-min" value="{{ default_max_min }}" min="1" max="120">
+      </div>
+    </div>
+    <div class="btn-row">
+      <button id="run-btn" onclick="runTask()">
+        <svg class="icon" viewBox="0 0 24 24" stroke="currentColor"><path d="M6 4l14 8-14 8V4z"/></svg>
+        Run
+      </button>
+      <button id="stop-btn" onclick="stopTask()" disabled>
+        <svg class="icon" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+        Stop
+      </button>
+    </div>
+    <div class="hint">Move the mouse to a screen corner on the PC at any time as a physical failsafe.</div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <div class="card-icon"><svg class="icon" viewBox="0 0 24 24"><path d="M12 2a5 5 0 015 5c0 2-1 3-2 4-.6.6-1 1.2-1 2v1H10v-1c0-.8-.4-1.4-1-2-1-1-2-2-2-4a5 5 0 015-5z"/><path d="M10 18h4M11 21h2"/></svg></div>
+      <div><h2>What's happening</h2><p class="sub">Live status</p></div>
+    </div>
+    <div class="status-row">
+      <div class="status-dot idle" id="status-dot"></div>
+      <div>
+        <div id="friendly-status">Idle -- type a task and press Run.</div>
+        <div id="friendly-sub"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="screenshot-card" style="display:none;">
+    <div class="card-head">
+      <div class="card-icon"><svg class="icon" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="12" cy="12" r="3.2"/></svg></div>
+      <div><h2>What the agent sees</h2><p class="sub">Refreshes automatically while running</p></div>
+    </div>
+    <div id="screenshot-wrap">
+      <span class="live-badge" id="live-badge"><span class="live-dot"></span>LIVE</span>
+      <div id="screenshot-placeholder">No screenshot yet.</div>
+      <img id="screenshot" alt="Latest screenshot">
+    </div>
+  </div>
+
+  <div class="card" id="connect-card">
+    <div class="card-head">
+      <div class="card-icon"><svg class="icon" viewBox="0 0 24 24"><rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/></svg></div>
+      <div><h2>Connect your phone</h2><p class="sub">Scan once, then add to your home screen</p></div>
+    </div>
+    <div class="connect-body">
+      <img id="qr-img" src="/api/qr.png" alt="QR code to open this on your phone">
+      <div class="connect-text">
+        <p>Scan this with your phone's camera. Once it opens, use your browser menu's "Add to Home Screen" so you won't need to scan again.</p>
+        <div class="url-box">
+          <span id="phone-url">...</span>
+          <button onclick="copyPhoneUrl()">Copy</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <details>
+      <summary>Technical log (for debugging)</summary>
+      <div class="terminal">
+        <div class="terminal-bar"><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-dot"></span></div>
+        <div id="log"></div>
+      </div>
+    </details>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <div class="card-icon"><svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg></div>
+      <div><h2>Recent runs</h2><p class="sub">Last 10 tasks</p></div>
+    </div>
+    <ul id="history-list"><li class="history-task">No runs yet.</li></ul>
+  </div>
+</main>
+
+<div id="confirm-overlay">
+  <div id="confirm-box">
+    <div class="confirm-head">
+      <div class="confirm-icon"><svg class="icon" viewBox="0 0 24 24"><path d="M12 2L2 20h20L12 2z"/><path d="M12 9v5M12 17h.01"/></svg></div>
+      <h3>Confirm high-risk action</h3>
+    </div>
+    <p id="confirm-details"></p>
+    <div class="btn-row">
+      <button onclick="answerConfirm(false)">Skip this action</button>
+      <button onclick="answerConfirm(true)">Approve</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const EXAMPLE_TASKS = {{ example_tasks | tojson }};
+const chipsEl = document.getElementById("example-chips");
+EXAMPLE_TASKS.forEach(t => {
+  const chip = document.createElement("div");
+  chip.className = "chip";
+  chip.textContent = t;
+  chip.onclick = () => { document.getElementById("task").value = t; };
+  chipsEl.appendChild(chip);
+});
+
+const logEl = document.getElementById("log");
+const runBtn = document.getElementById("run-btn");
+const stopBtn = document.getElementById("stop-btn");
+const statusDot = document.getElementById("status-dot");
+const friendlyStatusEl = document.getElementById("friendly-status");
+const friendlySubEl = document.getElementById("friendly-sub");
+const overlay = document.getElementById("confirm-overlay");
+const confirmDetails = document.getElementById("confirm-details");
+const screenshotCard = document.getElementById("screenshot-card");
+const screenshotImg = document.getElementById("screenshot");
+const screenshotPlaceholder = document.getElementById("screenshot-placeholder");
+const liveBadge = document.getElementById("live-badge");
+const historyList = document.getElementById("history-list");
+const resultCard = document.getElementById("result-card");
+const resultIcon = document.getElementById("result-icon");
+const resultLabel = document.getElementById("result-label");
+const resultValue = document.getElementById("result-value");
+
+// Same icon language as the rest of the page (outline SVGs), one per
+// outcome kind, plus the label shown above the actual answer text.
+const RESULT_META = {
+  done: { label: "Result", shape: '<path d="M20 6L9 17l-5-5"/>' },
+  fail: { label: "Couldn't finish", shape: '<path d="M18 6L6 18M6 6l12 12"/>' },
+  killed: { label: "Stopped", shape: '<rect x="6" y="6" width="12" height="12" rx="2"/>' },
+  iteration_limit: { label: "Ran out of steps", shape: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/>' },
+  time_limit: { label: "Ran out of time", shape: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/>' },
+};
+
+let resultDismissed = false;
+let lastResultKey = null;
+
+function showResult(kind, summary) {
+  const meta = RESULT_META[kind] || { label: "Finished", shape: '<circle cx="12" cy="12" r="9"/>' };
+  resultCard.className = "card show result-" + kind;
+  resultIcon.innerHTML = `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${meta.shape}</svg>`;
+  resultLabel.textContent = meta.label;
+  resultValue.textContent = summary || "(no details given)";
+}
+
+function dismissResult() {
+  resultDismissed = true;
+  resultCard.classList.remove("show");
+}
+
+function copyResult() {
+  navigator.clipboard?.writeText(resultValue.textContent);
+}
+
+// Only show the "connect your phone" card on non-mobile browsers -- a
+// phone visiting this page doesn't need to scan itself.
+const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+if (!isMobile) {
+  document.getElementById("connect-card").classList.add("show");
+  fetch("/api/connect-info").then(r => r.json()).then(d => {
+    document.getElementById("phone-url").textContent = d.phone_url;
+  });
+}
+function copyPhoneUrl() {
+  const text = document.getElementById("phone-url").textContent;
+  navigator.clipboard?.writeText(text);
+}
+
+function appendLog(line) {
+  logEl.textContent += line + "\n";
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function runTask() {
+  const task = document.getElementById("task").value.trim();
+  if (!task) { alert("Type a task first."); return; }
+  logEl.textContent = "";
+  fetch("/api/run", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      task: task,
+      backend: document.getElementById("backend").value,
+      max_iterations: parseInt(document.getElementById("max-iter").value, 10),
+      max_minutes: parseFloat(document.getElementById("max-min").value),
+    }),
+  }).then(r => r.json()).then(data => {
+    if (data.error) { alert(data.error); return; }
+    runBtn.disabled = true;
+    stopBtn.disabled = false;
+    screenshotCard.style.display = "block";
+    liveBadge.classList.add("show");
+    // Clear the old answer immediately rather than waiting for the next
+    // poll -- a stale result from the previous task shouldn't linger while
+    // a new one is running.
+    resultCard.classList.remove("show");
+    resultDismissed = false;
+    lastResultKey = null;
+  });
+}
+
+function stopTask() {
+  fetch("/api/stop", { method: "POST" });
+}
+
+function answerConfirm(approved) {
+  overlay.style.display = "none";
+  fetch("/api/confirm", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ approved: approved }),
+  });
+}
+
+function badgeClass(status) { return "badge badge-" + status; }
+
+function timeAgo(iso) {
+  if (!iso) return "";
+  const then = new Date(iso).getTime();
+  if (isNaN(then)) return "";
+  const diffMin = Math.round((Date.now() - then) / 60000);
+  if (diffMin < 1) return "just now";
+  if (diffMin < 60) return diffMin + "m ago";
+  const diffHr = Math.round(diffMin / 60);
+  if (diffHr < 24) return diffHr + "h ago";
+  return Math.round(diffHr / 24) + "d ago";
+}
+
+function loadHistory() {
+  fetch("/api/history").then(r => r.json()).then(data => {
+    if (!data.runs || data.runs.length === 0) {
+      historyList.innerHTML = '<li class="history-task">No runs yet.</li>';
+      return;
+    }
+    historyList.innerHTML = "";
+    data.runs.forEach(run => {
+      const li = document.createElement("li");
+      const main = document.createElement("div");
+      main.className = "history-main";
+      const taskDiv = document.createElement("div");
+      taskDiv.className = "history-task";
+      taskDiv.textContent = run.task || "(no task text)";
+      const timeDiv = document.createElement("div");
+      timeDiv.className = "history-time";
+      timeDiv.textContent = timeAgo(run.finished);
+      main.appendChild(taskDiv);
+      main.appendChild(timeDiv);
+      const badge = document.createElement("span");
+      badge.className = badgeClass(run.status);
+      badge.textContent = run.status.replace("_", " ");
+      li.appendChild(main);
+      li.appendChild(badge);
+      historyList.appendChild(li);
+    });
+  });
+}
+
+const source = new EventSource("/api/stream");
+source.onmessage = (e) => appendLog(JSON.parse(e.data));
+
+let wasRunning = false;
+
+setInterval(() => {
+  fetch("/api/status").then(r => r.json()).then(data => {
+    runBtn.disabled = data.running;
+    stopBtn.disabled = !data.running;
+    friendlyStatusEl.textContent = data.friendly_status;
+    friendlySubEl.textContent = data.running ? `Step ${data.step_count}` : "";
+
+    statusDot.className = "status-dot " + (
+      data.pending_confirm ? "waiting" : data.running ? "running" : "idle"
+    );
+
+    if (wasRunning && !data.running) { loadHistory(); liveBadge.classList.remove("show"); }
+    wasRunning = data.running;
+
+    // The result banner: server-side result_kind/result_summary are the
+    // authoritative answer to "what actually happened." A new result
+    // (different kind+summary than last seen) always re-shows even if the
+    // previous one was dismissed; the same result stays dismissed once
+    // closed. No result yet (fresh page, or a run just started) hides it.
+    const resultKey = data.result_kind ? (data.result_kind + "::" + (data.result_summary || "")) : null;
+    if (resultKey && resultKey !== lastResultKey) {
+      resultDismissed = false;
+      lastResultKey = resultKey;
+    }
+    if (resultKey && !resultDismissed) {
+      showResult(data.result_kind, data.result_summary);
+    } else if (!resultKey) {
+      resultCard.classList.remove("show");
+    }
+
+    if (data.pending_confirm) {
+      const pc = data.pending_confirm;
+      let details = `Matched keyword: '${pc.matched_keyword}'\n\nAction: ${pc.action}\nReasoning: ${pc.reasoning}`;
+      if (pc.coordinates) details += `\nCoordinates: ${pc.coordinates}`;
+      if (pc.text) details += `\nText: ${pc.text}`;
+      confirmDetails.textContent = details;
+      overlay.style.display = "flex";
+    } else {
+      overlay.style.display = "none";
+    }
+  });
+}, 1000);
+
+setInterval(() => {
+  fetch("/api/status").then(r => r.json()).then(data => {
+    if (!data.running) return;
+    screenshotCard.style.display = "block";
+    fetch("/api/screenshot").then(r => {
+      if (!r.ok) return;
+      screenshotImg.src = "/api/screenshot?t=" + Date.now();
+      screenshotImg.style.display = "block";
+      screenshotPlaceholder.style.display = "none";
+    });
+  });
+}, 2000);
+
+loadHistory();
+</script>
+</body>
+</html>

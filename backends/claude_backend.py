@@ -41,6 +41,7 @@ ACTION_TOOL = {
                     "wait",
                     "open_url",
                     "launch_app",
+                    "focus_window",
                     "done",
                     "fail",
                 ],
@@ -50,13 +51,21 @@ ACTION_TOOL = {
                 "items": {"type": "integer"},
                 "minItems": 2,
                 "maxItems": 2,
-                "description": "[x, y] pixel position in the screenshot you were shown.",
+                "description": (
+                    "[x, y] pixel position in the screenshot you were shown. Required "
+                    "for click/double_click. Also accepted for 'type' -- if given, that "
+                    "spot is clicked first to focus it before typing; include it whenever "
+                    "you're targeting a different field than your last action focused."
+                ),
             },
             "text": {
                 "type": "string",
                 "description": (
                     "String to type, if action is 'type'. A URL or search query, if "
-                    "action is 'open_url'. An application name, if action is 'launch_app'."
+                    "action is 'open_url'. An application name, if action is 'launch_app'. "
+                    "A substring of an already-open window's title, if action is "
+                    "'focus_window' (e.g. 'notepad' matches a window titled "
+                    "'Untitled - Notepad')."
                 ),
             },
             "key": {
@@ -105,14 +114,18 @@ class ClaudeBackend(VLMBackend):
     ) -> AgentAction:
         history_text = self._render_history(history)
         b64_image = base64.standard_b64encode(screenshot_bytes).decode("utf-8")
+        width, height = screen_size
 
         user_content = [
             {
                 "type": "text",
                 "text": (
                     f"TASK: {task}\n\n"
-                    f"SCREENSHOT SIZE: {screenshot_bytes and 'see image'} "
-                    f"(coordinates you give should be pixels within this image)\n\n"
+                    f"SCREENSHOT SIZE: {width}x{height} pixels. Your \"coordinates\" MUST be "
+                    f"within 0-{width} horizontally and 0-{height} vertically -- any value "
+                    f"outside that range will be rejected and the action skipped, wasting a "
+                    f"step. Do not estimate coordinates from a guess about typical screen "
+                    f"layouts; read them off this exact image.\n\n"
                     f"HISTORY OF PRIOR STEPS (most recent last):\n{history_text}\n\n"
                     "Here is the current screenshot. Decide the single next action."
                 ),

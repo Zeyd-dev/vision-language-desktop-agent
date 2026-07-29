@@ -2,10 +2,7 @@
 """
 Minimal desktop GUI for the Vision-Language Desktop Agent.
 
-This is a thin wrapper around the same building blocks agent.py's CLI
-uses (get_backend, ActionExecutor, capture_screenshot, RunLogger, the
-safety keyword check) -- it's the same loop, just with Tkinter widgets
-standing in for the terminal:
+This is a thin Tkinter wrapper around the shared loop in core/loop.py:
 
   - print()                  -> a line appended to the on-screen log box
   - the stdin kill switch     -> a "Stop" button setting a threading.Event
@@ -25,23 +22,12 @@ from __future__ import annotations
 import os
 import queue
 import threading
-import time
 import tkinter as tk
 from tkinter import messagebox, scrolledtext, ttk
+from typing import Optional
 
-import pyautogui
-
-from actions import (
-    ActionExecutor,
-    capture_screenshot,
-    contains_high_risk_keyword,
-    get_monitor_size,
-    get_pyautogui_size,
-    screens_differ,
-)
-from backends import get_backend
-from config import ACTION_SETTLE_SECONDS, DEFAULT_BACKEND, DEFAULT_MAX_ITERATIONS, DEFAULT_MAX_MINUTES, HISTORY_WINDOW
-from run_logger import RunLogger
+from config import DEFAULT_BACKEND, DEFAULT_MAX_ITERATIONS, DEFAULT_MAX_MINUTES
+from core import LoopCallbacks, run_agent_loop
 
 
 class AgentGUI:
@@ -63,9 +49,6 @@ class AgentGUI:
         self._build_widgets()
         self.root.after(100, self._poll)
 
-    # ------------------------------------------------------------------
-    # Widget layout
-    # ------------------------------------------------------------------
     def _build_widgets(self) -> None:
         pad = {"padx": 8, "pady": 4}
 
@@ -117,21 +100,19 @@ class AgentGUI:
         hint = "Move the mouse to a screen corner at any time as a physical failsafe."
         ttk.Label(self.root, text=hint, foreground="#888").pack(anchor="w", padx=10, pady=(0, 6))
 
-    # ------------------------------------------------------------------
-    # Called FROM the worker thread -- only ever touches thread-safe queues,
-    # never a widget directly.
-    # ------------------------------------------------------------------
+    # Called from the worker thread -- only touches thread-safe queues.
     def _log(self, msg: str) -> None:
         self.log_queue.put(msg)
 
-    def _ask_confirm(self, action, matched_keyword: str) -> bool:
+    def _confirm(self, action, matched_keyword: str) -> bool:
         """Blocks the worker thread until the main thread shows a popup and answers."""
         self.confirm_request.put((action, matched_keyword))
         return self.confirm_answer.get()
 
-    # ------------------------------------------------------------------
+    def _should_stop(self, step: int) -> Optional[str]:
+        return "Stopped from the GUI" if self.stop_event.is_set() else None
+
     # Runs on the main thread, on a timer -- the only place widgets are touched.
-    # ------------------------------------------------------------------
     def _poll(self) -> None:
         while True:
             try:
@@ -158,9 +139,6 @@ class AgentGUI:
 
         self.root.after(150, self._poll)
 
-    # ------------------------------------------------------------------
-    # Button handlers (main thread)
-    # ------------------------------------------------------------------
     def _on_run(self) -> None:
         task = self.task_entry.get().strip()
         if not task:
@@ -175,11 +153,8 @@ class AgentGUI:
         self.output.delete("1.0", "end")
         self.output.configure(state="disabled")
 
-        # Minimize this window before the loop starts capturing screenshots.
-        # Without this, the agent's first screenshot shows our own control
-        # panel, and the model tries to click OUR "Run" button instead of
-        # anything on the real desktop. update() forces Windows to actually
-        # process the minimize before we hand off to the worker thread.
+        # Minimize before the loop starts capturing screenshots, so the
+        # agent's first screenshot doesn't show our own control panel.
         self.root.iconify()
         self.root.update()
 
@@ -198,196 +173,16 @@ class AgentGUI:
         if self.last_run_dir and os.path.isdir(self.last_run_dir):
             os.startfile(self.last_run_dir)  # Windows-only, matches this project's target OS
 
-    # ------------------------------------------------------------------
-    # The loop itself (worker thread) -- same structure as agent.run() in
-    # agent.py, with GUI-native stand-ins for stdin/stdout. If you've read
-    # agent.py already, this should look very familiar.
-    # ------------------------------------------------------------------
     def _run_loop(self, task: str, backend_name: str, max_iterations: int, max_minutes: float) -> None:
-        try:
-            backend = get_backend(backend_name)
-        except Exception as e:
-            self._log(f"ERROR creating backend: {e}")
-            self._finish("fail")
-            return
-
-        executor = ActionExecutor()
-        logger = RunLogger(task)
-        self.last_run_dir = logger.run_dir
-
-        self._log(f"Task: {task}")
-        self._log(f"Backend: {backend_name}")
-        self._log(f"Logging to: {logger.run_dir}\n")
-
-        # Small buffer so Windows finishes the minimize animation from
-        # iconify() before we take the first screenshot.
-        time.sleep(0.4)
-
-        self._check_dpi_mismatch(logger)
-
-        history: list[dict] = []
-        previous_screenshot = None
-        start_time = time.monotonic()
-        status, detail, step = "iteration_limit", "Reached the iteration cap", 0
-
-        try:
-            for step in range(1, max_iterations + 1):
-                if self.stop_event.is_set():
-                    status, detail = "killed", "Stopped from the GUI"
-                    break
-
-                elapsed_minutes = (time.monotonic() - start_time) / 60
-                if elapsed_minutes >= max_minutes:
-                    status, detail = "time_limit", f"Reached the {max_minutes}-minute cap"
-                    break
-
-                self._log(f"[step {step}] capturing screenshot...")
-                screenshot = capture_screenshot()
-
-                if previous_screenshot is not None and history:
-                    changed = screens_differ(previous_screenshot.full_image, screenshot.full_image)
-                    history[-1]["screen_changed"] = changed
-                    if not changed:
-                        self._log(f"[step {step}] (note: screen looks unchanged since the previous action)")
-                previous_screenshot = screenshot
-
-                effective_task = task
-                if len(history) >= 3 and all(h.get("screen_changed") is False for h in history[-3:]):
-                    note = (
-                        "Your last 3 actions produced NO visible change on screen "
-                        "(confirmed by image comparison, not just your own judgment). "
-                        "Whatever approach you were using is not working -- do not repeat "
-                        "a similar click/type at a similar location again. If you've been "
-                        "trying to open an app or browser via the Start menu, taskbar, or "
-                        "keyboard shortcuts, STOP and use action 'open_url' (to go straight "
-                        "to a website/search) or 'launch_app' (to launch a named app "
-                        "directly) instead -- these bypass the GUI entirely and don't "
-                        "depend on menus being focused. Otherwise switch to a genuinely "
-                        "different element or method, or report 'fail' if truly stuck."
-                    )
-                    effective_task = f"{task}\n\n[SYSTEM NOTE] {note}"
-                    self._log(f"[step {step}] STUCK-LOOP WARNING: last 3 actions had no visible effect -- nudging model to change strategy")
-                    logger.log_note(f"step {step}: stuck-loop nudge sent -- {note}")
-
-                self._log(f"[step {step}] asking the model for the next action...")
-                action = backend.decide(
-                    task=effective_task,
-                    screenshot_bytes=screenshot.api_bytes,
-                    history=history,
-                    screen_size=screenshot.real_size,
-                )
-                self._log(f"[step {step}] reasoning: {action.reasoning}")
-                self._log(
-                    f"[step {step}] action: {action.action} "
-                    f"{action.coordinates or action.text or action.key or ''}"
-                )
-
-                if action.action == "done":
-                    logger.log_iteration(step, screenshot, action, outcome="task complete")
-                    status, detail = "done", action.done_summary or "Task reported complete"
-                    self._log(f"\nDONE: {detail}")
-                    break
-
-                if action.action == "fail":
-                    logger.log_iteration(step, screenshot, action, outcome="agent gave up")
-                    status, detail = "fail", action.fail_reason or "Agent reported failure"
-                    self._log(f"\nFAILED: {detail}")
-                    break
-
-                matched_keyword = contains_high_risk_keyword(
-                    action.reasoning, action.done_summary or "", action.text or ""
-                )
-                confirmed = None
-                if matched_keyword:
-                    confirmed = self._ask_confirm(action, matched_keyword)
-                    if not confirmed:
-                        outcome = "skipped: user declined high-risk confirmation"
-                        self._log(f"[step {step}] {outcome}")
-                        logger.log_iteration(step, screenshot, action, outcome=outcome, confirmed=False)
-                        history.append({"action": action.action, "reasoning": action.reasoning, "outcome": outcome})
-                        history = history[-HISTORY_WINDOW:]
-                        continue
-
-                outcome = self._execute(executor, action, screenshot)
-                self._log(f"[step {step}] {outcome}")
-                logger.log_iteration(step, screenshot, action, outcome=outcome, confirmed=confirmed)
-                history.append({"action": action.action, "reasoning": action.reasoning, "outcome": outcome})
-                history = history[-HISTORY_WINDOW:]
-
-                # Let the page/app settle before the next screenshot -- see
-                # the matching comment in agent.py's loop for why.
-                time.sleep(ACTION_SETTLE_SECONDS)
-
-        except pyautogui.FailSafeException:
-            status, detail = "killed", "pyautogui failsafe triggered (mouse moved to screen corner)"
-            self._log(detail)
-        except Exception as e:  # noqa: BLE001 - keep the GUI alive and report the error instead of crashing
-            status, detail = "fail", f"Unhandled error: {e}"
-            self._log(f"ERROR: {detail}")
-
-        logger.finalize(status=status, detail=detail, iterations=step)
-        self._log(f"\nRun finished: status={status} detail={detail}")
-        self._finish(status)
-
-    def _check_dpi_mismatch(self, logger: RunLogger) -> None:
-        """
-        Same check as agent.py's _check_dpi_mismatch: if mss (screenshots)
-        and pyautogui (clicks) disagree about the screen resolution, every
-        click the agent makes lands off-target by a predictable ratio --
-        one of the most likely explanations for clicks that look close but
-        never seem to register.
-        """
-        mss_size = get_monitor_size()
-        gui_size = get_pyautogui_size()
-        if mss_size == gui_size:
-            return
-        warning = (
-            f"WARNING: screen size mismatch. mss (screenshots) reports "
-            f"{mss_size[0]}x{mss_size[1]}, pyautogui (clicks) reports "
-            f"{gui_size[0]}x{gui_size[1]}. Coordinates get scaled assuming "
-            f"mss's resolution, so clicks will land in the wrong place. Fix: "
-            f"set Windows display scaling to 100% for this monitor, then "
-            f"restart the app."
+        callbacks = LoopCallbacks(
+            log=self._log,
+            confirm=self._confirm,
+            should_stop=self._should_stop,
+            on_minimize=lambda: None,  # already iconified in _on_run before this thread started
         )
-        self._log(warning)
-        logger.log_note(warning)
-
-    @staticmethod
-    def _execute(executor: ActionExecutor, action, screenshot) -> str:
-        """Identical dispatch logic to agent.py's _execute()."""
-        if action.action in ("click", "double_click"):
-            cx, cy = action.coordinates
-            if not screenshot.is_within_bounds(cx, cy):
-                w, h = screenshot.resized_size
-                return (
-                    f"skipped: coordinates {action.coordinates} fall outside the "
-                    f"{w}x{h} screenshot shown -- refusing to click blind"
-                )
-            x, y = screenshot.to_real_coords(cx, cy)
-            if action.action == "click":
-                executor.click(x, y)
-            else:
-                executor.double_click(x, y)
-            return f"{action.action} at ({x}, {y})"
-        if action.action == "type":
-            executor.type_text(action.text)
-            return f"typed {len(action.text)} characters"
-        if action.action == "key":
-            executor.press_key(action.key)
-            return f"pressed key '{action.key}'"
-        if action.action == "scroll":
-            executor.scroll(action.scroll_amount)
-            return f"scrolled ({action.scroll_amount or 'default'})"
-        if action.action == "wait":
-            executor.wait()
-            return "waited"
-        if action.action == "open_url":
-            opened = executor.open_url(action.text or "")
-            return f"opened in default browser: {opened}"
-        if action.action == "launch_app":
-            launched = executor.launch_app(action.text or "")
-            return f"launched app: {launched}"
-        return f"unrecognized action '{action.action}' (no-op)"
+        status, detail, run_dir = run_agent_loop(task, backend_name, max_iterations, max_minutes, callbacks)
+        self.last_run_dir = run_dir or self.last_run_dir
+        self._finish(status)
 
     def _finish(self, status: str) -> None:
         def _update() -> None:
@@ -395,4 +190,17 @@ class AgentGUI:
             self.stop_btn.configure(state="disabled")
             self.open_runs_btn.configure(state="normal" if self.last_run_dir else "disabled")
             self.status_var.set(status.replace("_", " ").capitalize())
-            self.root.deiconify()  # bring the window
+            self.root.deiconify()  # bring the window back now that the run is over
+            self.root.lift()
+
+        self.root.after(0, _update)
+
+
+def main() -> None:
+    root = tk.Tk()
+    AgentGUI(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()

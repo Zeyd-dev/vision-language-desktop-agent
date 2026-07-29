@@ -31,9 +31,8 @@ GEMINI_API_KEYS = [k.strip() for k in _raw_gemini_keys.split(",") if k.strip()]
 if not GEMINI_API_KEYS and GEMINI_API_KEY:
     GEMINI_API_KEYS = [GEMINI_API_KEY]
 
-# General-purpose vision-capable Gemini model (not the browser-only Computer
-# Use preview model) -- this is what lets GeminiBackend reuse our own
-# AgentAction schema instead of a browser-specific action format.
+# General-purpose vision-capable Gemini model, not the browser-only Computer
+# Use preview model -- lets GeminiBackend reuse our own AgentAction schema.
 GEMINI_MODEL = os.environ.get("VLA_GEMINI_MODEL", "gemini-2.5-flash")
 
 # --- Loop controller ---
@@ -43,14 +42,8 @@ DEFAULT_MAX_MINUTES = 10
 # the condensed history sent to the model each turn.
 HISTORY_WINDOW = 8
 
-# How long to pause after executing an action before the NEXT screenshot is
-# captured. Pages (especially search-result pages with async-loading panels,
-# images, ads) can still be shifting layout right after a click/navigation;
-# screenshotting too early captures a mid-shift state, which both misleads
-# the model and makes screens_differ() see "no change" for an action that
-# actually did something, just not yet visibly. This is intentionally short
-# -- it's a settle beat, not a full page-load wait (use the "wait" action
-# for that).
+# Pause after executing an action before the next screenshot -- lets
+# async-loading pages settle so we don't screenshot mid-layout-shift.
 ACTION_SETTLE_SECONDS = 1.0
 
 # --- Screenshot handling ---
@@ -90,6 +83,20 @@ HIGH_RISK_KEYWORDS = [
     "uninstall",
     "shutdown",
     "restart computer",
+]
+
+# Key combos that are risky by what they DO, regardless of how the model's
+# reasoning happens to describe them (unlike HIGH_RISK_KEYWORDS above, which
+# only catches risk if the model's own wording matches -- a real gap: a run
+# once pressed alt+f4 with zero confirmation because the model's reasoning
+# never used any listed word). Checked directly against the "key" field of
+# a "key" action, independent of reasoning text.
+HIGH_RISK_KEY_COMBOS = [
+    "alt+f4",
+    "ctrl+w",
+    "ctrl+q",
+    "ctrl+alt+delete",
+    "win+l",
 ]
 
 # Kill switch: typing this word (+ Enter) in the terminal from the monitor
