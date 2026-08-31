@@ -1,12 +1,4 @@
-"""
-Claude implementation of VLMBackend.
-
-Uses Anthropic's tool-use (function calling) to force the model's response
-into the strict action schema, rather than asking it to emit raw JSON and
-hoping it's well-formed. tool_choice pins the model to a single tool, so
-`response.content` will contain exactly one tool_use block whose `input`
-already matches our schema.
-"""
+"""Claude implementation of VLMBackend."""
 from __future__ import annotations
 
 import base64
@@ -88,8 +80,43 @@ ACTION_TOOL = {
                 "type": "string",
                 "description": "One sentence: what you expect to change after this action.",
             },
+            "expectation_met": {
+                "type": ["boolean", "null"],
+                "description": (
+                    "Reflect step: if the history's last entry has an 'expected_outcome', "
+                    "look at the CURRENT screenshot and judge whether that actually "
+                    "happened. true if it matched, false if it didn't (even if the screen "
+                    "changed -- changing into the WRONG thing still counts as false), null "
+                    "on the very first step when there's nothing yet to check."
+                ),
+            },
+            "target_hint": {
+                "type": "string",
+                "description": (
+                    "Optional, for click/double_click/type only: a short label for the "
+                    "element you're targeting (e.g. 'Compose button', 'Subject field'), "
+                    "read from its visible on-screen text. Used as a cross-check against "
+                    "your pixel coordinates -- include it whenever the target has visible "
+                    "text or an obvious name, omit it for generic/unlabeled points."
+                ),
+            },
+            "risk_level": {
+                "type": "string",
+                "enum": ["low", "medium", "high"],
+                "description": (
+                    "Your own honest assessment of this specific action's risk. 'high': "
+                    "irreversible or consequential -- sending/submitting something, "
+                    "deleting, purchasing, paying, publishing, signing out, unsubscribing, "
+                    "or anything with a similar real-world effect, REGARDLESS of which "
+                    "words you used in 'reasoning' to describe it. 'medium': moderate, "
+                    "recoverable changes -- navigating to an unfamiliar site, closing a "
+                    "window, changing a setting. 'low': routine, easily-undone actions -- "
+                    "scrolling, clicking a normal link, typing into a search box. Always "
+                    "set this field for every action; do not leave it out."
+                ),
+            },
         },
-        "required": ["reasoning", "action"],
+        "required": ["reasoning", "action", "risk_level"],
     },
 }
 
@@ -168,6 +195,9 @@ class ClaudeBackend(VLMBackend):
             done_summary=data.get("done_summary"),
             fail_reason=data.get("fail_reason"),
             expected_outcome=data.get("expected_outcome"),
+            expectation_met=data.get("expectation_met"),
+            target_hint=data.get("target_hint"),
+            risk_level=data.get("risk_level"),
             raw_response=data,
         )
         action.validate()
@@ -186,5 +216,9 @@ class ClaudeBackend(VLMBackend):
             )
             if "screen_changed" in step:
                 line += f" screen_changed={step['screen_changed']}"
+            if step.get("expected_outcome"):
+                line += f" expected=\"{step['expected_outcome'][:100]}\""
+            if step.get("expectation_met") is not None:
+                line += f" expectation_met={step['expectation_met']}"
             lines.append(line)
         return "\n".join(lines)

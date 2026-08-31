@@ -185,11 +185,111 @@ explicit number to stay within instead of estimating from the image alone.
 - **Add a new interface:** call `core.loop.run_agent_loop()` with a
   `LoopCallbacks` (log/confirm/should_stop) adapted to your frontend — see
   `agent.py`, `gui.py`, or `webapp/app.py` for three working examples.
-- **Add a reflect/replan step:** `AgentAction` already carries an optional
-  `expected_outcome` field the model fills in each turn. A future version
-  can capture the *next* screenshot, compare it against that expectation,
-  and explicitly branch on "this didn't do what I expected" instead of
-  always trusting the next `decide()` call to notice on its own.
+- **Reflect step: built.** `AgentAction` carries `expected_outcome` (the
+  model's own prediction) and `expectation_met` (the model's next-turn
+  verdict on whether that prediction came true, checked against the actual
+  screenshot). `run_agent_loop()` backfills `expectation_met` onto the
+  relevant history entry and folds it into stuck-detection alongside
+  `screen_changed` -- see "Reliability improvements" below.
+
+## Reliability improvements (this round)
+
+Six changes made together, aimed at multi-step "hard" tasks (form-filling,
+email) rather than any single bug, plus two more real bugs found and fixed
+while testing them. All pass real automated tests in `tests/` (81 tests)
+run in this environment -- but most have not been exercised against a live
+Windows screen yet. Treat anything GUI-dependent below as "compiles and
+passes its mocked tests," not "verified working," until confirmed on a real
+run.
+
+- **UI Automation cross-check for clicks.** `ActionExecutor.find_element_bounds()`
+  looks up a real on-screen control's exact bounding box via Windows UI
+  Automation (the same tree screen readers use) when the model supplies an
+  optional `target_hint` (e.g. `"Compose button"`). If a match is found
+  within 150px of the model's own pixel guess, the click snaps to the
+  element's real center instead of the estimate. Falls back to the raw
+  guess unchanged if UI Automation isn't available, the optional
+  `uiautomation` package isn't installed, or nothing matches -- this can
+  never make a click less reliable than before, only more precise when it
+  has real data to work with. Untested against a real screen so far.
+- **Reflect step (verify, don't just trust).** Every action includes
+  `expected_outcome`; the following turn's `expectation_met` is the model's
+  own honest comparison against what actually happened, which catches a
+  case `screen_changed` can't -- the screen changing into the *wrong* thing
+  (an error dialog instead of the target page) rather than not changing at
+  all.
+- **Structured `risk_level` on every action.** A third, independent signal
+  alongside the existing keyword and key-combo checks: the model
+  self-assesses `low`/`medium`/`high` risk on every single action, with
+  explicit criteria in the system prompt, regardless of which words it used
+  in `reasoning`. Closes the exact gap documented above (a run describing a
+  send using only "compose"/"submit"): `is_self_reported_high_risk()` in
+  `actions/safety.py` fires independently of the wording check.
+- **Repeatable benchmark suite.** `benchmarks/tasks.json` (16 tasks, easy/
+  medium/hard) and `benchmarks/run_benchmark.py` run the real agent loop
+  against each and record pass/fail/duration to `benchmarks/results/`.
+  Defaults to auto-*declining* any high-risk action mid-benchmark (a
+  benchmark runs unattended; auto-approving a real send/delete/purchase
+  unattended is exactly the failure mode the safety guardrails exist to
+  prevent) -- pass `--unsafe-auto-approve-high-risk` only for tasks built to
+  be safe to fully automate. Harness logic (task loading, pass/fail
+  aggregation) is tested directly; actually running it against a live
+  backend hasn't been done yet.
+- **Real automated tests.** `tests/` (new) -- 75 tests covering the safety
+  checks, coordinate scaling, screen-diff functions, schema validation, the
+  stuck-repeat detector, the retrospective-mention filter below, and three
+  full `run_agent_loop()` integration tests (stuck-repeat nudge reaches the
+  model's prompt exactly when it should; `risk_level` reaches the
+  confirmation gate even with no trigger word in `reasoning`; a real failed
+  run's exact reasoning text no longer triggers a confirmation cascade).
+  Run with `python -m unittest discover -s tests`. Uses fake `pyautogui`/
+  `mss` modules (`tests/_fakes.py`) since this logic doesn't need a real
+  screen -- the GUI-driving code itself (`pyautogui.click`, Windows UI
+  Automation calls) is still unverified against a real machine.
+- **Stricter, targeted stuck-detection.** `_find_stuck_repeat()` in
+  `core/loop.py` fires after just TWO repeats of the exact same action
+  against the exact same target (not three generic no-change results across
+  possibly-different targets), and the nudge it sends is specific to what
+  failed -- e.g. a repeated `focus_window` failure now says "click directly
+  instead," where the old generic nudge only ever suggested `open_url`/
+  `launch_app`, which doesn't even apply to a focus problem. Directly
+  modeled on the real "open Notepad" run where `focus_window` was retried 4
+  times before the model gave up on its own.
+- **Fixed: confirmation-fatigue cascade in the keyword check.** A real
+  "send an email" run's reasoning mentioned "clicking 'Send' didn't work"
+  once while explaining a retry, and every later, unrelated action for the
+  rest of the run -- retyping body text, clicking a close button, clicking
+  Compose again -- got flagged high-risk too, purely from that leftover
+  mention: 7 straight unnecessary confirmations before the human declined
+  out of fatigue and the run was abandoned without ever sending anything.
+  `contains_high_risk_keyword()` now filters out sentences that read as
+  narrating a past attempt (`RETROSPECTIVE_MARKERS` in `config.py`) before
+  matching. Verified against the real run's exact reasoning text: matches
+  dropped from 8 steps to the 2 genuine send clicks (`tests/test_retrospective_filter.py`).
+  Known limit, documented and tested rather than hidden: a single sentence
+  that mixes a past-tense reference with a genuinely current risky action
+  (e.g. "since deleting it last time failed, I will delete it again now")
+  can still slip through this heuristic -- `risk_level`, set independently
+  by the model rather than derived from parsing this text, is the intended
+  backstop for that case.
+- **Fixed: `open_url`/`launch_app` not stealing foreground focus.** A real
+  "search the weather" run showed the search actually succeeding in a
+  background browser tab while a different app (a dev environment) stayed
+  focused; the next screenshot was accurate but simply didn't show the
+  result yet, so the model concluded the action had failed and launched a
+  second, redundant Chrome window. Root cause: both actions call
+  `webbrowser.open()` / `subprocess.Popen(["cmd", "/c", "start", ...])` and
+  trust the OS to hand over focus, which it does not always do.
+  `_bring_forward_after_open()` in `actions/executor.py` waits briefly then
+  reuses `focus_window()`'s own verified match-and-raise logic against a
+  short list of hints (`COMMON_BROWSER_WINDOW_HINTS` for `open_url`, the app
+  name itself for `launch_app`), appending a bracketed confirmation like
+  `[brought 'chrome' window to the foreground]` to the outcome string when
+  it succeeds, and staying silent (never claiming a false success) when it
+  can't confirm anything. Covered by `tests/test_bring_forward.py` (6
+  tests: non-Windows short-circuit, first-hint-wins, falls through to the
+  second hint, and -- the actual bug -- never reports success when nothing
+  was confirmed).
 
 ## Known limitations
 
@@ -266,6 +366,20 @@ explicit number to stay within instead of estimating from the image alone.
   on an in-page Gmail panel and got a correct "not found" result, but wasted
   a step getting there. The system prompt now explicitly states this
   limitation and tells the model to click/scroll to in-page panels instead.
+- `focus_window` reported success even when it silently did nothing. A real
+  "open Notepad and type a note" run found the window correctly every time
+  but Windows' foreground-lock protection blocked the actual switch -- the
+  code already used the standard `AttachThreadInput` workaround, but never
+  checked whether it had actually worked, so it kept returning `"focused
+  window: 'Untitled - Notepad'"` on 4 straight attempts (steps 2, 4, 5, 6)
+  while the screen never changed, until the model gave up and clicked the
+  title bar directly. Fixed: `focus_window` now verifies the real foreground
+  window afterward with `GetForegroundWindow()`, retries once with a
+  simulated Alt keypress (Windows relaxes the lock right after real input) if
+  the first attempt didn't take, and returns an honest failure message
+  instead of a false "focused" result if it still didn't work. Not yet
+  verified against a real Windows run -- next real test should confirm this
+  removes the repeated-focus_window pattern.
 - The web UI's friendly status headline never showed the task's actual
   result. `core/loop.py` sends its completion line as `"\nDONE: {detail}"`
   (leading newline, for readable terminal/GUI output), but

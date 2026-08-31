@@ -1,22 +1,4 @@
-#!/usr/bin/env python3
-"""
-Minimal desktop GUI for the Vision-Language Desktop Agent.
-
-This is a thin Tkinter wrapper around the shared loop in core/loop.py:
-
-  - print()                  -> a line appended to the on-screen log box
-  - the stdin kill switch     -> a "Stop" button setting a threading.Event
-  - the stdin y/n confirmation-> a messagebox.askyesno popup
-
-The loop runs on a background thread so the window stays responsive while
-the agent is working. Tkinter widgets can only be touched from the main
-thread, so the worker thread never updates the UI directly -- it puts
-messages on thread-safe queues, and a periodic `root.after(...)` poll on
-the main thread drains those queues and updates the widgets.
-
-Usage:
-    python gui.py
-"""
+"""Minimal desktop GUI for the Vision-Language Desktop Agent."""
 from __future__ import annotations
 
 import os
@@ -37,8 +19,6 @@ class AgentGUI:
         root.geometry("760x580")
         root.minsize(600, 420)
 
-        # Thread-safe channels between the worker thread (running the loop)
-        # and the main thread (the only thread allowed to touch widgets).
         self.log_queue: "queue.Queue[str]" = queue.Queue()
         self.confirm_request: "queue.Queue[tuple]" = queue.Queue()
         self.confirm_answer: "queue.Queue[bool]" = queue.Queue()
@@ -100,7 +80,6 @@ class AgentGUI:
         hint = "Move the mouse to a screen corner at any time as a physical failsafe."
         ttk.Label(self.root, text=hint, foreground="#888").pack(anchor="w", padx=10, pady=(0, 6))
 
-    # Called from the worker thread -- only touches thread-safe queues.
     def _log(self, msg: str) -> None:
         self.log_queue.put(msg)
 
@@ -112,7 +91,6 @@ class AgentGUI:
     def _should_stop(self, step: int) -> Optional[str]:
         return "Stopped from the GUI" if self.stop_event.is_set() else None
 
-    # Runs on the main thread, on a timer -- the only place widgets are touched.
     def _poll(self) -> None:
         while True:
             try:
@@ -153,8 +131,6 @@ class AgentGUI:
         self.output.delete("1.0", "end")
         self.output.configure(state="disabled")
 
-        # Minimize before the loop starts capturing screenshots, so the
-        # agent's first screenshot doesn't show our own control panel.
         self.root.iconify()
         self.root.update()
 
@@ -171,14 +147,14 @@ class AgentGUI:
 
     def _open_last_run(self) -> None:
         if self.last_run_dir and os.path.isdir(self.last_run_dir):
-            os.startfile(self.last_run_dir)  # Windows-only, matches this project's target OS
+            os.startfile(self.last_run_dir)
 
     def _run_loop(self, task: str, backend_name: str, max_iterations: int, max_minutes: float) -> None:
         callbacks = LoopCallbacks(
             log=self._log,
             confirm=self._confirm,
             should_stop=self._should_stop,
-            on_minimize=lambda: None,  # already iconified in _on_run before this thread started
+            on_minimize=lambda: None,
         )
         status, detail, run_dir = run_agent_loop(task, backend_name, max_iterations, max_minutes, callbacks)
         self.last_run_dir = run_dir or self.last_run_dir
@@ -190,7 +166,7 @@ class AgentGUI:
             self.stop_btn.configure(state="disabled")
             self.open_runs_btn.configure(state="normal" if self.last_run_dir else "disabled")
             self.status_var.set(status.replace("_", " ").capitalize())
-            self.root.deiconify()  # bring the window back now that the run is over
+            self.root.deiconify()
             self.root.lift()
 
         self.root.after(0, _update)

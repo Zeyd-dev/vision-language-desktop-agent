@@ -1,17 +1,4 @@
-"""
-Gemini implementation of VLMBackend.
-
-Free-tier alternative to ClaudeBackend. Uses Gemini's structured-output
-feature (response_schema) to force the model's answer into the same
-AgentAction shape Claude gives us via tool-use -- different mechanism on
-Google's side, same guarantee: the API enforces the shape, we never parse
-free text and hope.
-
-Supports a POOL of API keys (config.GEMINI_API_KEYS). Each free-tier
-Google Cloud project has its own independent daily quota, so when the
-current key's daily cap is hit, this backend rotates to the next key
-automatically instead of just failing the run.
-"""
+"""Gemini implementation of VLMBackend."""
 from __future__ import annotations
 
 import json
@@ -27,15 +14,10 @@ from .prompts import SYSTEM_PROMPT
 from config import GEMINI_API_KEYS, GEMINI_MODEL
 
 
-# Substrings in Gemini's error messages for transient problems (server
-# overload, rate limiting) vs. real bugs (bad key, malformed request).
-# Only transient errors get retried.
 _TRANSIENT_ERROR_HINTS = ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED", "overloaded")
-# Google's quotaId naming tells us which kind of limit was hit. A per-day
-# hit means only rotating keys helps; anything else is worth a backoff-retry.
 _DAILY_QUOTA_HINT = "PerDay"
 _MAX_RETRIES_PER_KEY = 3
-_RETRY_BACKOFF_SECONDS = 2  # doubles each retry: 2s, 4s, 8s
+_RETRY_BACKOFF_SECONDS = 2
 
 
 class _AgentActionSchema(BaseModel):
@@ -50,11 +32,12 @@ class _AgentActionSchema(BaseModel):
     done_summary: Optional[str] = None
     fail_reason: Optional[str] = None
     expected_outcome: Optional[str] = None
+    expectation_met: Optional[bool] = None
+    target_hint: Optional[str] = None
+    risk_level: Optional[str] = None
 
 
 class GeminiBackend(VLMBackend):
-    # Free tier for gemini-2.5-flash allows 5 requests/minute; pace calls
-    # to approach that limit deliberately instead of tripping it.
     _MIN_SECONDS_BETWEEN_CALLS = 13
 
     def __init__(
@@ -115,6 +98,9 @@ class GeminiBackend(VLMBackend):
             done_summary=data.get("done_summary"),
             fail_reason=data.get("fail_reason"),
             expected_outcome=data.get("expected_outcome"),
+            expectation_met=data.get("expectation_met"),
+            target_hint=data.get("target_hint"),
+            risk_level=data.get("risk_level"),
             raw_response=data,
         )
         action.validate()
@@ -135,7 +121,7 @@ class GeminiBackend(VLMBackend):
             return False
         self._key_index += 1
         self.client = genai.Client(api_key=self._api_keys[self._key_index])
-        self._last_call_time = None  # fresh key has no shared pacing history
+        self._last_call_time = None
         return True
 
     def _generate_with_retry(self, prompt_text: str, screenshot_bytes: bytes):
@@ -157,16 +143,16 @@ class GeminiBackend(VLMBackend):
                             "response_schema": _AgentActionSchema,
                         },
                     )
-                except Exception as e:  # noqa: BLE001 - inspecting message text, not a specific SDK exception type
+                except Exception as e:
                     last_error = e
                     if not any(hint in str(e) for hint in _TRANSIENT_ERROR_HINTS):
-                        raise  # not transient -- fail fast
+                        raise
                     if _DAILY_QUOTA_HINT in str(e):
-                        break  # stop retrying THIS key; try rotating below instead
+                        break
                     if attempt < _MAX_RETRIES_PER_KEY:
                         time.sleep(_RETRY_BACKOFF_SECONDS * (2**attempt))
             else:
-                raise last_error  # exhausted per-key retries, never hit a daily-quota break
+                raise last_error
 
             if not self._rotate_key():
                 raise RuntimeError(
@@ -197,5 +183,9 @@ class GeminiBackend(VLMBackend):
             )
             if "screen_changed" in step:
                 line += f" screen_changed={step['screen_changed']}"
+            if step.get("expected_outcome"):
+                line += f" expected=\"{step['expected_outcome'][:100]}\""
+            if step.get("expectation_met") is not None:
+                line += f" expectation_met={step['expectation_met']}"
             lines.append(line)
         return "\n".join(lines)

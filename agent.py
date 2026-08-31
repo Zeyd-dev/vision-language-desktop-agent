@@ -1,15 +1,4 @@
-#!/usr/bin/env python3
-"""
-CLI entry point for the Vision-Language Desktop Agent.
-
-Usage:
-    python agent.py "Open a browser and go to YouTube"
-    python agent.py "Open a browser and go to YouTube" --max-iterations 15 --max-minutes 5
-
-This file wires stdin/stdout up to the shared loop in core/loop.py -- the
-actual screenshot -> decide -> safety check -> execute -> log logic lives
-there so agent.py, gui.py, and webapp/app.py all run the identical loop.
-"""
+"""CLI entry point for the Vision-Language Desktop Agent."""
 from __future__ import annotations
 
 import argparse

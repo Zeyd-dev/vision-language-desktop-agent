@@ -1,13 +1,4 @@
-"""
-Shared agent loop core.
-
-agent.py (CLI), gui.py (Tkinter), and webapp/app.py (browser/phone) all call
-run_agent_loop() below, parameterized by a LoopCallbacks object that adapts
-logging, confirmation prompts, and stop-checking to whichever frontend is
-driving it. This is the one place the loop's actual logic (screenshot ->
-decide -> safety-check -> execute -> log -> repeat) lives, so a fix only
-needs to be made once instead of three times.
-"""
+"""Shared agent loop core."""
 from __future__ import annotations
 
 import time
@@ -25,6 +16,7 @@ from actions import (
     get_monitor_size,
     get_pyautogui_size,
     is_high_risk_key_combo,
+    is_self_reported_high_risk,
     screens_differ,
 )
 from backends import get_backend
@@ -35,9 +27,9 @@ from run_logger import RunLogger
 @dataclass
 class LoopCallbacks:
     log: Callable[[str], None]
-    confirm: Callable[[object, str], bool]  # (action, matched_keyword) -> approved?
-    should_stop: Callable[[int], Optional[str]]  # (step) -> stop reason, or None to continue
-    on_minimize: Optional[Callable[[], None]] = None  # GUI-only: minimize the control window first
+    confirm: Callable[[object, str], bool]
+    should_stop: Callable[[int], Optional[str]]
+    on_minimize: Optional[Callable[[], None]] = None
 
 
 def check_dpi_mismatch(logger: RunLogger, log: Callable[[str], None]) -> None:
@@ -58,13 +50,7 @@ def check_dpi_mismatch(logger: RunLogger, log: Callable[[str], None]) -> None:
 
 
 def _guarded_real_xy(screenshot, cx, cy):
-    """Validate bounds + staleness for a model-given coordinate pair.
-
-    Returns the real (x, y) pixel position to act on, or a string outcome
-    explaining why the action was skipped instead. Shared by click/
-    double_click and by "type" actions that include coordinates, so both
-    get the same out-of-bounds and stale-screenshot protection.
-    """
+    """Validate bounds + staleness for a model-given coordinate pair."""
     if not screenshot.is_within_bounds(cx, cy):
         w, h = screenshot.resized_size
         return (
@@ -72,15 +58,6 @@ def _guarded_real_xy(screenshot, cx, cy):
             f"{w}x{h} screenshot shown -- refusing to click blind"
         )
 
-    # Guard against acting on a screen that's no longer what the model
-    # decided on. The gap between "screenshot taken" and "action executed"
-    # is the full decide() round-trip -- easily several seconds, and much
-    # longer on Gemini's paced free tier (~13s minimum between calls). A
-    # dynamic page can reflow, a spinner resolve, or a banner appear in
-    # that window, so the coordinates are still valid for the OLD layout
-    # but not necessarily the current one. Re-screenshot right before
-    # acting (cheap, <100ms) and bail if it moved on, rather than
-    # confidently clicking the wrong thing.
     fresh = capture_screenshot()
     if screens_differ(screenshot.full_image, fresh.full_image):
         return (
@@ -91,58 +68,57 @@ def _guarded_real_xy(screenshot, cx, cy):
     return screenshot.to_real_coords(cx, cy)
 
 
-def execute_action(executor: ActionExecutor, action, screenshot):
-    """Dispatch one AgentAction to the executor.
+_ELEMENT_SNAP_MAX_DISTANCE = 150
 
-    Returns (outcome, acted_xy): outcome is a short string for logging/
-    history, and acted_xy is the real (x, y) pixel position clicked, if
-    any -- the caller uses it to run a localized screen-diff check around
-    that spot (see run_agent_loop), since a small UI change can be too
-    subtle to move a whole-screen diff even though the click worked.
-    """
+
+def _maybe_snap_to_element(executor: ActionExecutor, target_hint, real_xy):
+    """Cross-check the model's guessed click point against the real UI."""
+    if not target_hint:
+        return real_xy, None
+    bounds = executor.find_element_bounds(target_hint)
+    if not bounds:
+        return real_xy, None
+    left, top, right, bottom = bounds
+    element_x, element_y = (left + right) / 2, (top + bottom) / 2
+    real_x, real_y = real_xy
+    distance = ((element_x - real_x) ** 2 + (element_y - real_y) ** 2) ** 0.5
+    if distance > _ELEMENT_SNAP_MAX_DISTANCE:
+        return real_xy, None
+    return (int(round(element_x)), int(round(element_y))), f"snapped to element '{target_hint}'"
+
+
+def execute_action(executor: ActionExecutor, action, screenshot):
+    """Dispatch one AgentAction to the executor."""
     if action.action in ("click", "double_click"):
         cx, cy = action.coordinates
         result = _guarded_real_xy(screenshot, cx, cy)
         if isinstance(result, str):
             return result, None
         x, y = result
+        (x, y), snap_note = _maybe_snap_to_element(executor, action.target_hint, (x, y))
         if action.action == "click":
             executor.click(x, y)
         else:
             executor.double_click(x, y)
-        # Report the outcome using the coordinates the MODEL gave (image
-        # space), not the real screen pixels we scaled them to. This string
-        # is fed straight back into the model's own history next turn --
-        # if it shows real pixel values while the model is told to always
-        # give coordinates in image space, the model has no way to tell
-        # the two numbers apart and can pick up a stale real-pixel value
-        # as if it were a fresh image-space guess (observed in a real run:
-        # step N's proposed coordinates were an exact match for step N-1's
-        # real executed pixel position). acted_xy stays in real screen
-        # space since the region-diff check crops the real screenshot.
-        return f"{action.action} at ({cx}, {cy})", (x, y)
+        suffix = f" [{snap_note}]" if snap_note else ""
+        return f"{action.action} at ({cx}, {cy}){suffix}", (x, y)
 
     if action.action == "type":
-        # If the model gave coordinates with a "type" action, click there
-        # first to actually focus that field before typing. Previously
-        # these coordinates were silently ignored and type_text() just
-        # typed into whatever already had focus -- in a real run this
-        # concatenated a recipient address and an email subject into the
-        # same "To" field, because nothing ever moved focus to Subject
-        # between the two "type" actions.
         acted_xy = None
         display_xy = None
+        snap_note = None
         if action.coordinates:
             cx, cy = action.coordinates
             result = _guarded_real_xy(screenshot, cx, cy)
             if isinstance(result, str):
                 return result, None
-            acted_xy = result
-            display_xy = (cx, cy)  # image-space, for the reason above
+            acted_xy, snap_note = _maybe_snap_to_element(executor, action.target_hint, result)
+            display_xy = (cx, cy)
             executor.click(*acted_xy)
         executor.type_text(action.text)
         prefix = f"clicked ({display_xy[0]}, {display_xy[1]}) then " if display_xy else ""
-        return f"{prefix}typed {len(action.text)} characters", acted_xy
+        suffix = f" [{snap_note}]" if snap_note else ""
+        return f"{prefix}typed {len(action.text)} characters{suffix}", acted_xy
 
     if action.action == "key":
         executor.press_key(action.key)
@@ -170,6 +146,80 @@ def execute_action(executor: ActionExecutor, action, screenshot):
     return f"unrecognized action '{action.action}' (no-op)", None
 
 
+def _target_key(action, acted_xy):
+    """A key identifying WHAT an action was aimed at, coarse enough that two."""
+    if action.action in ("click", "double_click"):
+        if not acted_xy:
+            return None
+        x, y = acted_xy
+        return (action.action, round(x / 25) * 25, round(y / 25) * 25)
+    if action.action == "type":
+        if not acted_xy:
+            return ("type", None)
+        x, y = acted_xy
+        return ("type", round(x / 25) * 25, round(y / 25) * 25)
+    if action.action == "focus_window":
+        return ("focus_window", (action.text or "").strip().lower())
+    if action.action == "key":
+        return ("key", (action.key or "").strip().lower())
+    if action.action in ("open_url", "launch_app"):
+        return (action.action, (action.text or "").strip().lower())
+    return None
+
+
+def _find_stuck_repeat(history: list[dict]):
+    """Stricter, faster companion to the generic 3-in-a-row stuck-detection check."""
+    if len(history) < 2:
+        return None
+    a, b = history[-2], history[-1]
+    key_a, key_b = a.get("target_key"), b.get("target_key")
+    if key_a is None or key_a != key_b:
+        return None
+    if a.get("action") != b.get("action"):
+        return None
+
+    def _failed(entry: dict) -> bool:
+        return entry.get("screen_changed") is False or entry.get("expectation_met") is False
+
+    if _failed(a) and _failed(b):
+        return b
+    return None
+
+
+def _stuck_repeat_nudge(entry: dict) -> str:
+    """Build a nudge specific to WHAT kept failing, not a generic one-size."""
+    action = entry.get("action")
+    key = entry.get("target_key")
+    if action == "focus_window":
+        name = key[1] if isinstance(key, tuple) and len(key) > 1 else "this window"
+        return (
+            f"'focus_window' targeting \"{name}\" has now failed twice in a row with "
+            f"no real effect. Windows is very likely blocking the foreground switch "
+            f"outright for this window right now. Do NOT try focus_window on it again, "
+            f"even with a differently-worded substring -- click directly on the visible "
+            f"window instead."
+        )
+    if action in ("click", "double_click"):
+        return (
+            "The exact same click target has now failed twice in a row with no real "
+            "effect (confirmed by screen comparison and/or your own expectation check). "
+            "Do not try a third click at this location, even at a slightly different "
+            "pixel -- scroll it into view, pick a genuinely different element, or use a "
+            "different method entirely."
+        )
+    if action == "type":
+        return (
+            "Typing into this same spot has now failed twice in a row with no real "
+            "effect. The field was likely never actually focused. Use 'key' with 'tab' "
+            "from the last field you successfully filled, instead of guessing new "
+            "coordinates for this one again."
+        )
+    return (
+        "The exact same action and target have now failed twice in a row with no real "
+        "effect. Switch to a genuinely different approach instead of repeating it."
+    )
+
+
 def run_agent_loop(
     task: str,
     backend_name: str,
@@ -195,7 +245,7 @@ def run_agent_loop(
 
     if callbacks.on_minimize:
         callbacks.on_minimize()
-        time.sleep(0.4)  # let a minimize animation finish before the first screenshot
+        time.sleep(0.4)
 
     check_dpi_mismatch(logger, log)
 
@@ -219,15 +269,9 @@ def run_agent_loop(
             log(f"[step {step}] capturing screenshot...")
             screenshot = capture_screenshot()
 
-            # Backfill: did the last action actually change anything on screen?
             if previous_screenshot is not None and history:
                 changed = screens_differ(previous_screenshot.full_image, screenshot.full_image)
                 if not changed:
-                    # A whole-screen diff can miss a real, small change (a
-                    # popup closing, one field updating) on a large monitor --
-                    # the rest of the screen swamps it. If the last action
-                    # clicked/typed at a specific spot, also check just that
-                    # local area before concluding nothing happened.
                     xy = history[-1].get("xy")
                     if xy:
                         region_before = crop_region(previous_screenshot.full_image, *xy)
@@ -239,7 +283,13 @@ def run_agent_loop(
             previous_screenshot = screenshot
 
             effective_task = task
-            if len(history) >= 3 and all(h.get("screen_changed") is False for h in history[-3:]):
+            stuck_repeat = _find_stuck_repeat(history)
+            if stuck_repeat is not None:
+                note = _stuck_repeat_nudge(stuck_repeat)
+                effective_task = f"{task}\n\n[SYSTEM NOTE] {note}"
+                log(f"[step {step}] STUCK-REPEAT WARNING: same action+target failed twice -- nudging model to change strategy")
+                logger.log_note(f"step {step}: stuck-repeat nudge sent -- {note}")
+            elif len(history) >= 3 and all(h.get("screen_changed") is False for h in history[-3:]):
                 note = (
                     "Your last 3 actions produced NO visible change on screen "
                     "(confirmed by image comparison, not just your own judgment). "
@@ -261,13 +311,13 @@ def run_agent_loop(
                 task=effective_task,
                 screenshot_bytes=screenshot.api_bytes,
                 history=history,
-                # The *resized* dimensions -- i.e. the size of the image actually
-                # encoded in screenshot.api_bytes, not the real monitor resolution.
-                # Coordinates the model returns are in this space (see
-                # Screenshot.to_real_coords()), so this is the number that must
-                # reach the prompt for "stay within bounds" to mean anything.
                 screen_size=screenshot.resized_size,
             )
+            if history:
+                history[-1]["expectation_met"] = action.expectation_met
+                if action.expectation_met is False:
+                    log(f"[step {step}] (note: model's own reflect check says the previous action did NOT produce the expected result)")
+
             log(f"[step {step}] reasoning: {action.reasoning}")
             log(f"[step {step}] action: {action.action} "
                 f"{action.coordinates or action.text or action.key or ''}")
@@ -291,6 +341,8 @@ def run_agent_loop(
                 combo = is_high_risk_key_combo(action.key)
                 if combo:
                     matched_keyword = f"key:{combo}"
+            if not matched_keyword and is_self_reported_high_risk(action.risk_level):
+                matched_keyword = "self-reported risk_level=high"
             confirmed = None
             if matched_keyword:
                 confirmed = callbacks.confirm(action, matched_keyword)
@@ -298,17 +350,30 @@ def run_agent_loop(
                     outcome = "skipped: user declined high-risk confirmation"
                     log(f"[step {step}] {outcome}")
                     logger.log_iteration(step, screenshot, action, outcome=outcome, confirmed=False)
-                    history.append({"action": action.action, "reasoning": action.reasoning, "outcome": outcome, "xy": None})
+                    history.append({
+                        "action": action.action,
+                        "reasoning": action.reasoning,
+                        "outcome": outcome,
+                        "xy": None,
+                        "target_key": None,
+                        "expected_outcome": action.expected_outcome,
+                    })
                     history = history[-HISTORY_WINDOW:]
                     continue
 
             outcome, acted_xy = execute_action(executor, action, screenshot)
             log(f"[step {step}] {outcome}")
             logger.log_iteration(step, screenshot, action, outcome=outcome, confirmed=confirmed)
-            history.append({"action": action.action, "reasoning": action.reasoning, "outcome": outcome, "xy": acted_xy})
+            history.append({
+                "action": action.action,
+                "reasoning": action.reasoning,
+                "outcome": outcome,
+                "xy": acted_xy,
+                "target_key": _target_key(action, acted_xy),
+                "expected_outcome": action.expected_outcome,
+            })
             history = history[-HISTORY_WINDOW:]
 
-            # Let the page/app settle before the next screenshot.
             time.sleep(ACTION_SETTLE_SECONDS)
 
     except KillSwitch as e:
@@ -317,7 +382,7 @@ def run_agent_loop(
     except pyautogui.FailSafeException:
         status, detail = "killed", "pyautogui failsafe triggered (mouse moved to screen corner)"
         log(detail)
-    except Exception as e:  # noqa: BLE001 - top-level guard so a run always finalizes cleanly
+    except Exception as e:
         status, detail = "fail", f"Unhandled error: {e}"
         log(f"ERROR: {detail}")
 

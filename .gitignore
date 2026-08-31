@@ -15,3 +15,27 @@ runs/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Personal/internal -- not part of the public project
+debbie_deck.pptx
+debbie_deck.pdf
+how_the_agent_thinks.pptx
+note_to_debbie.md
+presenting_to_debbie_walkthrough.md
+today_improvements.pptx
+tomorrows_meeting_speech_script.md
+meeting_script.md
+next_steps_roadmap.md
+full_briefing.md
+linkedin_post.md
+research_paper_template.docx
+research_paper_template.pdf
+research_paper_template.tex
+codebase_walkthrough.md
+
+# LaTeX build byproducts
+research_paper/*.aux
+research_paper/*.log
+research_paper/*.out
+research_paper/*.toc
+research_paper/c*.log

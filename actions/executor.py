@@ -1,12 +1,4 @@
-"""
-Screen capture and OS-level input execution.
-
-Wraps `mss` (screenshots) and `pyautogui` (mouse/keyboard) behind a small
-ActionExecutor class, plus a Screenshot capture helper that produces both a
-full-resolution image (for logging) and a downscaled JPEG (for the VLM),
-tracking the scale factor so model-provided coordinates can be mapped back
-to real screen pixels.
-"""
+"""Screen capture and OS-level input execution."""
 from __future__ import annotations
 
 import io
@@ -23,12 +15,9 @@ import mss
 import pyautogui
 from PIL import Image
 
-from config import SCREENSHOT_JPEG_QUALITY, SCREENSHOT_MAX_WIDTH
+from config import COMMON_BROWSER_WINDOW_HINTS, SCREENSHOT_JPEG_QUALITY, SCREENSHOT_MAX_WIDTH
 
-# pyautogui safety net: slamming the mouse into a screen corner aborts
-# whatever pyautogui is doing (raises FailSafeException).
 pyautogui.FAILSAFE = True
-# Small delay between pyautogui calls so the OS/UI has time to react.
 pyautogui.PAUSE = 0.15
 
 
@@ -38,14 +27,14 @@ def _enable_windows_dpi_awareness() -> None:
     try:
         import ctypes
 
-        ctypes.windll.shcore.SetProcessDpiAwareness(1)  # PROCESS_SYSTEM_DPI_AWARE
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
     except Exception:
         try:
             import ctypes
 
             ctypes.windll.user32.SetProcessDPIAware()
         except Exception:
-            pass  # best effort; see README for manual scaling workaround
+            pass
 
 
 _enable_windows_dpi_awareness()
@@ -53,11 +42,11 @@ _enable_windows_dpi_awareness()
 
 @dataclass
 class Screenshot:
-    full_image: Image.Image  # native resolution, kept for saving to the run log
-    api_bytes: bytes  # downscaled JPEG bytes, sent to the VLM
-    real_size: Tuple[int, int]  # (width, height) of full_image
-    resized_size: Tuple[int, int]  # (width, height) encoded in api_bytes
-    scale: float  # real_size / resized_size (uniform across both axes)
+    full_image: Image.Image
+    api_bytes: bytes
+    real_size: Tuple[int, int]
+    resized_size: Tuple[int, int]
+    scale: float
 
     def to_real_coords(self, x: float, y: float) -> Tuple[int, int]:
         """Map a coordinate given in the downscaled (API) image back to real screen pixels."""
@@ -94,12 +83,7 @@ def screens_differ(img_a: Image.Image, img_b: Image.Image, threshold: float = 0.
 
 
 def crop_region(img: Image.Image, x: int, y: int, box: int = 180) -> Image.Image:
-    """Crop a `box`-pixel square centered on real screen coordinates (x, y), clamped to the image.
-
-    Used to supplement screens_differ() with a localized check: a small UI
-    change (a compose popup closing, one field updating) can be too small
-    to move a whole-screen diff, even though the action genuinely worked --
-    diffing just the area around where the action happened catches that."""
+    """Crop a `box`-pixel square centered on real screen coordinates (x, y), clamped to the image."""
     w, h = img.size
     half = box // 2
     left = max(0, min(x - half, w - box)) if w > box else 0
@@ -111,7 +95,7 @@ def crop_region(img: Image.Image, x: int, y: int, box: int = 180) -> Image.Image
 
 def capture_screenshot() -> Screenshot:
     with mss.mss() as sct:
-        monitor = sct.monitors[1]  # primary monitor; monitors[0] is "all monitors" combined
+        monitor = sct.monitors[1]
         raw = sct.grab(monitor)
         full_image = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
 
@@ -148,7 +132,6 @@ class ActionExecutor:
         pyautogui.write(text, interval=0.02)
 
     def press_key(self, key: str) -> None:
-        # Support combos like "ctrl+l" as well as single keys like "enter".
         parts = [p.strip() for p in key.lower().split("+") if p.strip()]
         if len(parts) > 1:
             pyautogui.hotkey(*parts)
@@ -156,13 +139,22 @@ class ActionExecutor:
             pyautogui.press(parts[0])
 
     def scroll(self, amount: Optional[int]) -> None:
-        # Schema convention: positive = scroll down, negative = scroll up.
-        # pyautogui.scroll uses the opposite sign and small integer "clicks".
         clicks = amount if amount else 3
         pyautogui.scroll(-clicks * 40)
 
     def wait(self, seconds: float = 1.5) -> None:
         time.sleep(seconds)
+
+    def _bring_forward_after_open(self, name_hints: list, settle_seconds: float = 0.8) -> Optional[str]:
+        """Best-effort: after opening a URL or launching an app, the OS."""
+        if platform.system() != "Windows":
+            return None
+        time.sleep(settle_seconds)
+        for name in name_hints:
+            result = self.focus_window(name)
+            if result.startswith("focused window:"):
+                return f"brought '{name}' window to the foreground"
+        return None
 
     def open_url(self, url_or_query: str) -> str:
         """Open a URL (or search query) in the OS default browser directly, no GUI navigation involved."""
@@ -173,23 +165,18 @@ class ActionExecutor:
             else:
                 target = f"https://www.google.com/search?q={quote_plus(target)}"
         webbrowser.open(target)
-        return target
+        note = self._bring_forward_after_open(COMMON_BROWSER_WINDOW_HINTS)
+        return f"{target} [{note}]" if note else target
 
     def launch_app(self, name: str) -> str:
         """Launch a named app directly (same mechanism as the Windows Run dialog), no GUI steps involved."""
         name = name.strip()
         subprocess.Popen(["cmd", "/c", "start", "", name], shell=False)
-        return name
+        note = self._bring_forward_after_open([name])
+        return f"{name} [{note}]" if note else name
 
     def focus_window(self, name: str) -> str:
-        """Bring an already-open window to the foreground by matching a substring of its title.
-
-        This exists because clicking a taskbar icon or alt-tabbing blind is one of the
-        least reliable things the model can do -- it has to guess pixel coordinates for
-        an icon it can't precisely locate, or cycle windows with no way to confirm which
-        one landed in front. This gives a deterministic alternative: find the window,
-        raise it, done in one step -- no guessing involved.
-        """
+        """Bring an already-open window to the foreground by matching a substring of its title."""
         if platform.system() != "Windows":
             return f"focus_window not supported on this OS (skipped): {name}"
 
@@ -219,19 +206,77 @@ class ActionExecutor:
 
         hwnd, title = matches[0]
         SW_RESTORE = 9
-        user32.ShowWindow(hwnd, SW_RESTORE)  # un-minimize if needed
+        user32.ShowWindow(hwnd, SW_RESTORE)
 
-        # SetForegroundWindow is blocked by Windows for background processes unless
-        # our thread's input state is briefly attached to the current foreground
-        # window's thread -- the standard workaround for this restriction.
-        fg_hwnd = user32.GetForegroundWindow()
-        current_thread = kernel32.GetCurrentThreadId()
-        fg_thread = user32.GetWindowThreadProcessId(fg_hwnd, None)
-        target_thread = user32.GetWindowThreadProcessId(hwnd, None)
-        user32.AttachThreadInput(current_thread, fg_thread, True)
-        user32.AttachThreadInput(current_thread, target_thread, True)
-        user32.SetForegroundWindow(hwnd)
-        user32.AttachThreadInput(current_thread, fg_thread, False)
-        user32.AttachThreadInput(current_thread, target_thread, False)
+        def _attempt_foreground() -> bool:
+            """Try to raise hwnd and report whether it actually became the foreground window."""
+            fg_hwnd = user32.GetForegroundWindow()
+            current_thread = kernel32.GetCurrentThreadId()
+            fg_thread = user32.GetWindowThreadProcessId(fg_hwnd, None)
+            target_thread = user32.GetWindowThreadProcessId(hwnd, None)
+            user32.AttachThreadInput(current_thread, fg_thread, True)
+            user32.AttachThreadInput(current_thread, target_thread, True)
+            user32.SetForegroundWindow(hwnd)
+            user32.AttachThreadInput(current_thread, fg_thread, False)
+            user32.AttachThreadInput(current_thread, target_thread, False)
+            return user32.GetForegroundWindow() == hwnd
 
-        return f"focused window: {title!r}"
+        if not _attempt_foreground():
+            VK_MENU = 0x12
+            KEYEVENTF_KEYUP = 0x0002
+            user32.keybd_event(VK_MENU, 0, 0, 0)
+            user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
+            _attempt_foreground()
+
+        if user32.GetForegroundWindow() == hwnd:
+            return f"focused window: {title!r}"
+        return (
+            f"found window {title!r} but Windows blocked bringing it to the "
+            f"foreground (another app is likely holding focus) -- try clicking "
+            f"directly on the visible window instead of retrying focus_window"
+        )
+
+    def find_element_bounds(self, name_hint: str) -> Optional[Tuple[int, int, int, int]]:
+        """Look up a real on-screen control's exact bounding box by name, via."""
+        if platform.system() != "Windows":
+            return None
+        try:
+            import uiautomation as auto
+        except ImportError:
+            return None
+
+        needle = (name_hint or "").strip().lower()
+        if not needle:
+            return None
+
+        try:
+            root = auto.GetForegroundControl()
+            if root is None:
+                return None
+            MAX_NODES = 800
+            MAX_DEPTH = 12
+            stack: list[tuple[object, int]] = [(root, 0)]
+            visited = 0
+            while stack and visited < MAX_NODES:
+                node, depth = stack.pop()
+                visited += 1
+                try:
+                    name = (node.Name or "").strip().lower()
+                except Exception:
+                    name = ""
+                if name and needle in name:
+                    try:
+                        rect = node.BoundingRectangle
+                        if rect and rect.width() > 0 and rect.height() > 0:
+                            return (rect.left, rect.top, rect.right, rect.bottom)
+                    except Exception:
+                        pass
+                if depth < MAX_DEPTH:
+                    try:
+                        for child in node.GetChildren():
+                            stack.append((child, depth + 1))
+                    except Exception:
+                        pass
+            return None
+        except Exception:
+            return None

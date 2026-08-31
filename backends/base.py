@@ -1,10 +1,4 @@
-"""
-Model-agnostic interface for the perceive+decide step of the agent loop.
-
-The loop controller only ever talks to a `VLMBackend`. To swap Claude for
-another model later, implement this interface (see `ClaudeBackend` for a
-reference implementation) and pass an instance into `Agent(backend=...)`.
-"""
+"""Model-agnostic interface for the perceive+decide step of the agent loop."""
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -39,10 +33,10 @@ class AgentAction:
     scroll_amount: Optional[int] = None
     done_summary: Optional[str] = None
     fail_reason: Optional[str] = None
-    # Optional: what the model expects to see after this action executes.
-    # Used by the (future) reflect step; safe to ignore now.
     expected_outcome: Optional[str] = None
-    # Populated by the loop controller after parsing, not by the model.
+    expectation_met: Optional[bool] = None
+    target_hint: Optional[str] = None
+    risk_level: Optional[str] = None
     raw_response: Optional[dict] = field(default=None, repr=False)
 
     def validate(self) -> None:
@@ -66,6 +60,10 @@ class AgentAction:
             raise ValueError("Action 'done' requires 'done_summary'")
         if self.action == "fail" and not self.fail_reason:
             raise ValueError("Action 'fail' requires 'fail_reason'")
+
+        if self.risk_level is not None:
+            normalized = self.risk_level.strip().lower()
+            self.risk_level = normalized if normalized in ("low", "medium", "high") else None
 
 
 class VLMBackend(ABC):

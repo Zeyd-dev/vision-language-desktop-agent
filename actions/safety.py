@@ -1,12 +1,4 @@
-"""
-Safety guardrails: high-risk action detection, terminal confirmation
-prompts, and a global kill switch.
-
-Design note: both the kill switch and the confirmation prompts need to read
-from stdin. A single background thread (StdinListener) is the only thing
-that ever reads stdin, pushing every typed line onto a queue that everything
-else consumes from -- avoids two independent input() calls racing.
-"""
+"""Safety guardrails: high-risk action detection, terminal confirmation."""
 from __future__ import annotations
 
 import queue
@@ -15,7 +7,14 @@ import sys
 import threading
 from typing import Optional
 
-from config import HIGH_RISK_KEY_COMBOS, HIGH_RISK_KEYWORDS, KILL_SWITCH_PHRASE
+from config import (
+    HIGH_RISK_KEY_COMBOS,
+    HIGH_RISK_KEYWORDS,
+    KILL_SWITCH_PHRASE,
+    RETROSPECTIVE_MARKERS,
+)
+
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 
 
 class KillSwitch(Exception):
@@ -54,25 +53,35 @@ class StdinListener:
         return self._queue.get()
 
 
-def contains_high_risk_keyword(*texts: str) -> Optional[str]:
-    """Return the first matching keyword found across the given texts, or None.
+def _is_retrospective(sentence: str) -> bool:
+    """True if a sentence reads as narrating a past attempt rather than a current action."""
+    lowered = sentence.lower()
+    return any(marker in lowered for marker in RETROSPECTIVE_MARKERS)
 
-    Uses word-boundary matching so "format" doesn't also match "information"."""
-    combined = " ".join(t for t in texts if t).lower()
+
+def contains_high_risk_keyword(*texts: str) -> Optional[str]:
+    """Return the first matching keyword found across the given texts, or None."""
+    kept_sentences = []
+    for text in texts:
+        if not text:
+            continue
+        for sentence in _SENTENCE_SPLIT_RE.split(text):
+            if sentence and not _is_retrospective(sentence):
+                kept_sentences.append(sentence)
+    combined = " ".join(kept_sentences).lower()
     for kw in HIGH_RISK_KEYWORDS:
         if re.search(rf"\b{re.escape(kw)}\b", combined):
             return kw
     return None
 
 
-def is_high_risk_key_combo(key: Optional[str]) -> Optional[str]:
-    """Return the matched combo if a "key" action's key is inherently risky, or None.
+def is_self_reported_high_risk(risk_level: Optional[str]) -> bool:
+    """True if the model's own structured self-assessment says this action is high-risk."""
+    return (risk_level or "").strip().lower() == "high"
 
-    This checks what the action IS (e.g. alt+f4 closes the focused window),
-    independent of how the model's "reasoning" happens to describe it --
-    contains_high_risk_keyword() above only catches risk if the model's own
-    wording matches a listed word, and a real run once pressed alt+f4 with
-    zero confirmation because its reasoning never used any listed word."""
+
+def is_high_risk_key_combo(key: Optional[str]) -> Optional[str]:
+    """Return the matched combo if a "key" action's key is inherently risky, or None."""
     if not key:
         return None
     normalized = "+".join(p.strip() for p in key.lower().split("+") if p.strip())

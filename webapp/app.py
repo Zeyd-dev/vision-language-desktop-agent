@@ -1,23 +1,4 @@
-#!/usr/bin/env python3
-"""
-Local web UI for the Vision-Language Desktop Agent.
-
-Same shared loop as agent.py (CLI) and gui.py (Tkinter), just fronted by a
-browser instead of a terminal or a desktop window -- which means it also
-works from a phone on the same wifi network, since it's just a web page.
-
-Run it with:
-    python webapp/app.py
-
-The console prints a scannable QR code, and the page itself (when viewed on
-the PC) also shows a "Connect your phone" card with the same QR code and
-the direct link, so you don't need to go find the terminal window either.
-After the first phone visit, use the browser's "Add to Home Screen" option
-for a one-tap icon next time -- no retyping or re-scanning.
-
-One run at a time, same as gui.py -- there's a single global run state, not
-one per browser tab/device.
-"""
+"""Local web UI for the Vision-Language Desktop Agent."""
 from __future__ import annotations
 
 import glob
@@ -76,16 +57,9 @@ class RunState:
         self.last_run_dir: Optional[str] = None
         self.current_run_dir: Optional[str] = None
         self.pending_confirm: Optional[dict] = None
-        self.history: list[str] = []  # so a client connecting mid-run still sees prior lines
+        self.history: list[str] = []
         self.friendly_status = "Idle -- type a task and press Run."
         self.step_count = 0
-        # The actual outcome of the most recently finished run, kept separate
-        # from friendly_status (which is transient, step-by-step commentary).
-        # result_kind is one of "done" / "fail" / "killed" / "iteration_limit"
-        # / "time_limit", or None if nothing has finished yet / a new run
-        # just started. This is what the prominent result banner reads --
-        # it survives a page reload, so coming back later still shows the
-        # answer instead of just the raw log.
         self.result_kind: Optional[str] = None
         self.result_summary: Optional[str] = None
 
@@ -96,14 +70,6 @@ class RunState:
         self._update_friendly_status(msg)
 
     def _update_friendly_status(self, msg: str) -> None:
-        # core/loop.py sends the DONE/FAILED/"Run finished" lines with a
-        # leading "\n" (for readability in a raw log/terminal). A plain
-        # msg.startswith("DONE:") is False for "\nDONE: ...", so those three
-        # status lines silently never matched here -- the friendly headline
-        # stayed stuck on "Finishing up" forever, even though the task
-        # actually completed and the real answer was sitting in the raw
-        # technical log the whole time. Strip before matching so the
-        # headline actually reflects the outcome.
         stripped = msg.strip()
 
         m = re.search(r"^\[step (\d+)\] capturing screenshot", stripped)
@@ -131,11 +97,6 @@ class RunState:
             }
             self.friendly_status = friendly_verbs.get(m.group(1), f"Doing: {m.group(1)}")
             return
-        # The single line core/loop.py always sends exactly once at the very
-        # end of every run, regardless of how it ended -- the one reliable
-        # place to capture the final outcome for the result banner, including
-        # paths (killed, iteration_limit, time_limit) that have no earlier
-        # DONE:/FAILED: line to hook into.
         m = re.match(r"^Run finished: status=(\S+) detail=(.*)$", stripped)
         if m:
             status_val, detail_val = m.group(1), m.group(2)
@@ -176,7 +137,7 @@ def _confirm(action, matched_keyword: str) -> bool:
         "text": action.text,
     }
     state.log(f"[confirmation needed] matched keyword '{matched_keyword}' -- waiting for approval...")
-    approved = state.confirm_answer.get()  # blocks the worker thread until answered
+    approved = state.confirm_answer.get()
     state.pending_confirm = None
     return approved
 

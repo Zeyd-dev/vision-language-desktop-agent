@@ -7,3 +7,8 @@ Pillow>=10.0.0
 python-dotenv>=1.0.0
 flask>=3.0.0
 qrcode>=7.4.2
+# Windows-only, optional: powers find_element_bounds()'s UI Automation
+# cross-check for click targets. Safe to skip on other platforms or if
+# install fails -- executor.py falls back to raw pixel coordinates with no
+# behavior change if this import isn't available.
+uiautomation>=2.0.20; sys_platform == "win32"

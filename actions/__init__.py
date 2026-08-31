@@ -13,6 +13,7 @@ from .safety import (
     confirm_risky_action,
     contains_high_risk_keyword,
     is_high_risk_key_combo,
+    is_self_reported_high_risk,
 )
 
 __all__ = [
@@ -28,4 +29,5 @@ __all__ = [
     "confirm_risky_action",
     "contains_high_risk_keyword",
     "is_high_risk_key_combo",
+    "is_self_reported_high_risk",
 ]

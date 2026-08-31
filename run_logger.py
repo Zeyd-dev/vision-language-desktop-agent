@@ -1,15 +1,4 @@
-"""
-Per-run logging: every iteration's reasoning, action, and a screenshot
-thumbnail get written to runs/<timestamp>/ so a run can be reviewed after
-the fact without re-running it.
-
-Layout produced per run:
-  runs/<timestamp>/
-    screenshots/step_00.jpg, step_01.jpg, ...
-    log.jsonl        one JSON object per iteration (machine-readable)
-    log.txt          same information, human-readable
-    summary.json     final status + task + iteration count, written at the end
-"""
+"""Per-run logging: every iteration's reasoning, action, and a screenshot."""
 from __future__ import annotations
 
 import json
@@ -37,8 +26,8 @@ class RunLogger:
     def log_iteration(
         self,
         step: int,
-        screenshot,  # actions.Screenshot
-        action,  # backends.AgentAction
+        screenshot,
+        action,
         outcome: str,
         confirmed: Optional[bool] = None,
     ) -> None:
@@ -57,6 +46,9 @@ class RunLogger:
             "done_summary": action.done_summary,
             "fail_reason": action.fail_reason,
             "expected_outcome": action.expected_outcome,
+            "expectation_met": getattr(action, "expectation_met", None),
+            "target_hint": getattr(action, "target_hint", None),
+            "risk_level": getattr(action, "risk_level", None),
             "outcome": outcome,
             "confirmed_high_risk": confirmed,
             "screenshot": os.path.relpath(screenshot_path, self.run_dir),
@@ -82,7 +74,7 @@ class RunLogger:
     def finalize(self, status: str, detail: str, iterations: int) -> None:
         summary = {
             "task": self.task,
-            "status": status,  # "done" | "fail" | "iteration_limit" | "time_limit" | "killed"
+            "status": status,
             "detail": detail,
             "iterations": iterations,
             "finished": datetime.now(timezone.utc).isoformat(),

@@ -11,12 +11,7 @@ _BACKENDS = {
 
 
 def get_backend(name: str) -> VLMBackend:
-    """
-    Look up a backend by name ("claude" or "gemini") and construct it.
-    This is the one place that needs to know both backend classes exist —
-    agent.py just calls get_backend(name) and gets back something that
-    satisfies VLMBackend, without caring which one it is.
-    """
+    """Look up a backend by name ("claude" or "gemini") and construct it."""
     try:
         backend_cls = _BACKENDS[name]
     except KeyError:
